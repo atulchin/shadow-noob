@@ -1,0 +1,13 @@
+
+{:source-paths ["src"]
+ :dependencies [[cider/cider-nrepl "0.24.0"]
+                [org.clojure/core.async "1.1.587"]
+                ;[quil "3.1.0"]
+                ]
+ :dev-http {8080 "target/"}
+ :builds {:app {:output-dir "target/"
+                :asset-path "."
+                :target :browser
+                :modules {:main {:init-fn app.main/main!}}
+                :devtools {:after-load app.main/reload!}
+                }}}
