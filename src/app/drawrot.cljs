@@ -1,6 +1,7 @@
 
 (ns app.drawrot
-  (:require ["rot-js" :as rot]))
+  (:require ["rot-js" :as rot]
+            [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]))
 
 ;; just functions for drawing to the display
 
@@ -32,16 +33,19 @@
 
 ;;set display options and add it to the document body
 (defn init-disp! [w h]
-  ;;set javascript properties using (set!)
-  (set! (.-id (.getContainer disp)) "canvas-id")
-  ;;(.getContainer) returns a <canvas> element; append it to the html body
-  (.appendChild (. js/document -body) (.getContainer disp))
-  (.setOptions disp #js{
-                        :width w
-                        :height h
+  ;;return a channel that lets us know it's ok to draw to the display
+  (let [out (chan)]
+    (go
+      ;;set javascript properties using (set!)
+      (set! (.-id (.getContainer disp)) "canvas-id")
+      ;;(.getContainer) returns a <canvas> element; append it to the html body
+      (.appendChild (. js/document -body) (.getContainer disp))
+      (.setOptions disp #js{:width w
+                            :height h
                         ;:fontSize (.computeFontSize disp (. js/window -innerWidth) (. js/window -innerHeight))
-                        :fontSize 23
-                        }))
+                            :fontSize 23})
+      (>! out true))
+    out))
 
 ;;draws a named object to xy coords contained in k
 (defn draw-kv [[k v]]

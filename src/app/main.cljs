@@ -9,9 +9,10 @@
 
 ;;initialize world-map and interface with given width and height
 (defn init! [w h]
-  (init-grid! w h)
-  (init-disp! w h)
-  (re-draw @world-state))
+  (go
+    (init-grid! w h)
+    (when (<! (init-disp! w h))
+      (re-draw @world-state))))
 
 ;;maps input codes to functions
 (def keymap {[37] #(move-player! 6)
