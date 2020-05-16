@@ -3,7 +3,7 @@
   (:require ["rot-js" :as rot]
             [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]
             [app.world :as world :refer [world-state init-grid! move-player! open-box!]]
-            [app.drawrot :as draw :refer [init-disp! redraw-entity re-draw]]))
+            [app.drawcanvas :as draw :refer [init-disp! redraw-entity re-draw]]))
 
 (defonce key-chan (chan)) ;;channel for processing keyboard input
 
