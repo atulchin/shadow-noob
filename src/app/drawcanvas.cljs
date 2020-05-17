@@ -61,6 +61,18 @@
   (.clearRect ctx x y tile-w tile-h)
   )
 
+(defn- color-str [coll]
+  (str "rgba(" (apply str (interpose "," coll)) ")"))
+
+(defn- draw-rect [ctx [x y] [w h] color]
+  (set! (. ctx -fillStyle) (color-str color))
+  (.fillRect ctx x y w h))
+
+(defn draw-glow [mkvs]
+  (let [{:keys [ctx]} @context]
+    (doseq [[k v] mkvs]
+      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [255 255 0 (* v 0.2)]))))
+
 ;;draws a named object to xy coords contained in k
 (defn- draw-kv [d-context [k v]]
   (let [{:keys [ctx tiles tilemap icons]} d-context
@@ -80,11 +92,12 @@
 
 ;; an entity is a key-val pair
 ;;  where the val is a hashmap containing a :coords key
-(defn- draw-entity [d-context [k {:keys [coords]}]]
+(defn- draw-entity [d-context [k {:keys [coords fov]}]]
   (let [{:keys [ctx tiles tilemap icons]} d-context
         xy (mapv * coords TILE-DIMS)
         sxy (get tilemap (get icons k))]
     (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
+    (draw-glow fov)
     ))
 
 (defn- clear-canvas [d-context]
@@ -108,3 +121,4 @@
     (draw-kv d-context (find (:grid world-state) old-coords))
     (draw-entity d-context (find (:entities world-state) entity-key))
     ))
+

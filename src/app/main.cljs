@@ -94,7 +94,9 @@
       ;; apply game rules based on the result or the world-state
       (game-rules result)
       ;;redraw changes made by current entity; (:coords entity) is the old position
-      (redraw-entity @world-state entity-key (:coords entity))
+      ;(redraw-entity @world-state entity-key (:coords entity))
+      ;TODO: is it worth keeping track of what needs to be redrawn?
+      (re-draw @world-state)
       ;;pass result to output channel
       (>! ch result))
     (recur (.next scheduler))))
@@ -137,6 +139,7 @@
 (defn reload! []
   (re-draw @world-state)
   )
+
 
 
 

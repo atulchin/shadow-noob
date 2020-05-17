@@ -3,7 +3,7 @@
     (:require ["rot-js" :as rot]
               [clojure.set :as set]))
 
-(declare chase! fov-precise fov-90)
+(declare chase! compute-fov fov-precise fov-90)
 
 ;; just functions for querying and modifying world state
 ;;   probably shouldn't spawn any processes in here
@@ -17,15 +17,24 @@
 ;;    -- it is not really an "act" method
 (defonce world-state (atom {:grid {}
                             :entities {:player {:id :player :type :local-player 
-                                                :fov-fn #(fov-precise %) :vision 2}
+                                                :fov-fn #(fov-precise %) :vision 10}
                                        :pedro {:id :pedro :type :npc 
-                                               :fov-fn #(fov-90 %) :vision 2
+                                               :fov-fn #(fov-90 %) :vision 5
                                                :action #(chase! :pedro :player)}}
                             }))
 
 ;; modifying multiple keys in a hashmap
+;;   with a static value v:
 (defn assoc-multi [coll ks v]
   (reduce #(assoc %1 %2 v) coll ks))
+
+;;   with a function of the current value:
+(defn update-multi [coll ks f]
+  (reduce #(update %1 %2 f) coll ks))
+
+;; updates all keys in coll
+(defn update-all [coll f]
+  (update-multi coll (keys coll) f))
 
 ;; n random items from a collection
 (defn sample [n coll]
@@ -67,44 +76,16 @@
     (swap! world-state #(-> %
                         ;;add boxes to the map and update the world state
                             (assoc :grid (insert-boxes grid box-keys))
-                        ;;give each starting entity a location
-                        ;;  an entity is a k-v pair where each v is a map w/ a :coords key
+                        ;;give each starting entity a location (:coords key) and random facing (:delta key)
+                        ;;  an entity is a k-v pair where each v is a hashmap
                             (assoc :entities
-                                   (into {} (map (fn [[k v] x] [k (assoc v :coords x)])
+                                   (into {} (map (fn [[k v] x] [k (assoc v :coords x :delta (rand-nth dirs))])
                                                  starting-entities starting-coords)))
                         ;;update world state with location of ananas
                             (assoc :ananas (first box-keys))))
+    ;; compute entities' fov based on starting info
+    (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
     ))
-
-;; moves player in a given grid direction
-;;   updates world state
-;;   returns new state if player was moved, otherwise nil
-(defn move-player! [d]
-  (let [s @world-state
-        delta (dirs d)
-        ;; mapv + adds two vectors
-        new-coords (mapv + (get-in s [:entities :player :coords]) delta)]
-    ;;update state only if new coords are on the grid
-    (when (contains? (:grid s) new-coords)
-      ;;update with new coords and coord change
-      (swap! world-state update-in [:entities :player] assoc :coords new-coords :delta delta)
-      ;;swap returns new state, but we probably don't need it?
-      {:move new-coords}
-      )))
-
-;; if the player is on a closed box, open it and check for ananas
-;;   returns box contents if a box was opened, otherwise nil
-(defn open-box! []
-  (let [s @world-state 
-        coords (get-in s [:entities :player :coords])]
-    (when (= (get-in s [:grid coords]) :closed-box)
-      (swap! world-state assoc-in [:grid coords] :open-box)
-      ;; s is the old state, but that doesn't matter here
-      (if (= (:ananas s) coords)
-        (do (swap! world-state assoc :ananas [])
-            {:ananas true})
-        {:ananas false})
-      )))
 
 ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
 ;;  this generates and returns that fn
@@ -173,7 +154,12 @@
     ;;save the change from previous coordinates
     (let [delta (mapv - next-step (get-in @world-state [:entities entity-key :coords]))]
       ;;update coordinates and coordinate change
-      (swap! world-state update-in [:entities entity-key] assoc :coords next-step :delta delta)))
+      (swap! world-state update-in [:entities entity-key] 
+             assoc :coords next-step :delta delta)
+      ;;update fov using new info
+      ;;TODO put this in a general "move" fn
+      (swap! world-state update-in [:entities entity-key] #(assoc % :fov (compute-fov %)))
+      ))
   {:path-length (count rest-of-path)})
 
 ;; entity behavior: move towards target entity
@@ -186,3 +172,34 @@
         topology 4]
     (follow-path! entity-key (compute-path e-coords t-coords topology))
     ))
+
+;; moves player in a given grid direction
+;;   updates world state
+;;   returns result if player was moved, otherwise nil
+(defn move-player! [d]
+  (let [s @world-state
+        delta (dirs d)
+        ;; mapv + adds two vectors
+        new-coords (mapv + (get-in s [:entities :player :coords]) delta)]
+    ;;update state only if new coords are on the grid
+    (when (contains? (:grid s) new-coords)
+      ;;update with new coords and coord change
+      (swap! world-state update-in [:entities :player] assoc :coords new-coords :delta delta)
+      ;;update fov using new info
+      ;;TODO put this in a general "move" fn
+      (swap! world-state update-in [:entities :player] #(assoc % :fov (compute-fov %)))
+      ;;swap returns new state, but we probably don't need it?
+      {:move new-coords})))
+
+;; if the player is on a closed box, open it and check for ananas
+;;   returns box contents if a box was opened, otherwise nil
+(defn open-box! []
+  (let [s @world-state
+        coords (get-in s [:entities :player :coords])]
+    (when (= (get-in s [:grid coords]) :closed-box)
+      (swap! world-state assoc-in [:grid coords] :open-box)
+      ;; s is the old state, but that doesn't matter here
+      (if (= (:ananas s) coords)
+        (do (swap! world-state assoc :ananas [])
+            {:ananas true})
+        {:ananas false}))))
