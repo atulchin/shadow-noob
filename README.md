@@ -26,7 +26,7 @@ npm install rot-js
 
 `:dev-http` specifies that `target/` will be served at http://localhost:8080 .
 
-Copy index.html and style.css from assets/ to target/
+Copy index.html, style.css, and bitpack.png from assets/ to target/
 
 ### REPL
 
