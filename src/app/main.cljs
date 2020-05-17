@@ -8,7 +8,7 @@
 (defonce key-chan (chan)) ;;channel for processing keyboard input
 
 ;;initialize world-map and interface with given width and height
-(defn init! [w h]
+(defn init [w h]
   (go
     (init-grid! w h)
     (when (<! (init-disp! w h))
@@ -72,10 +72,10 @@
   (cond
     (:ananas result) (do
                        (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
-                       (swap! draw/icons #(assoc % :player (get % :ananas))))
+                       (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :ananas]))))
     (= 0 (:path-length result)) (do
                                   (js/alert "Pedro has caught you!\n\nYOU ARE THE NEW PEDRO!")
-                                  (swap! draw/icons #(assoc % :player (get % :pedro)))
+                                  (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :pedro])))
                                   (swap! world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip})))))
 
 ;; turn-loop spawns a looping process that allocates game turns
@@ -85,7 +85,7 @@
           ;;save a snapshot of the world state
     (let [state @world-state
           ;;save a snapshot of the entity
-          entity (get (:entities state) entity-key)
+          entity (get-in state [:entities entity-key])
           ;; (take-turn) will change the world state, puts result on a channel
           ;; <! (take-turn) will park until something is put on that channel
           result (if entity
@@ -127,7 +127,7 @@
 
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
-  (init! 60 40)
+  (init 60 40)
   (. js/document addEventListener "keydown" key-event)
   (start-turn-loop)
   )

@@ -3,7 +3,7 @@
     (:require ["rot-js" :as rot]
               [clojure.set :as set]))
 
-(declare chase!)
+(declare chase! fov-precise fov-90)
 
 ;; just functions for querying and modifying world state
 ;;   probably shouldn't spawn any processes in here
@@ -16,8 +16,10 @@
 ;;    :action is any function that gets called on the entity's turn
 ;;    -- it is not really an "act" method
 (defonce world-state (atom {:grid {}
-                            :entities {:player {:id :player :type :local-player}
-                                       :pedro {:id :pedro :type :npc
+                            :entities {:player {:id :player :type :local-player 
+                                                :fov-fn #(fov-precise %) :vision 2}
+                                       :pedro {:id :pedro :type :npc 
+                                               :fov-fn #(fov-90 %) :vision 2
                                                :action #(chase! :pedro :player)}}
                             }))
 
@@ -35,7 +37,7 @@
 
 ;; rot-js map generator uses callback fn to modify an object
 ;;   this generates and returns that fn
-(defn digger-callback [grid-ref]
+(defn- digger-callback [grid-ref]
   (fn [x y v]
     (if (= v 1)
       nil ;;1 = wall, don't store walls
@@ -43,12 +45,12 @@
 
 ;; create a temporary mutable ref for the rot-js map generator to use
 ;;   then return an ordinary clj hashmap
-(defn generate-grid [rot-digger]
+(defn- generate-grid [rot-digger]
   (let [grid-ref (atom {})]
     (.create rot-digger (digger-callback grid-ref))
     (into {} @grid-ref)))
 
-(defn insert-boxes [grid ks]
+(defn- insert-boxes [grid ks]
   (assoc-multi grid ks :closed-box))
 
 ;; create a starting map
@@ -79,11 +81,13 @@
 ;;   returns new state if player was moved, otherwise nil
 (defn move-player! [d]
   (let [s @world-state
+        delta (dirs d)
         ;; mapv + adds two vectors
-        new-coords (mapv + (get-in s [:entities :player :coords]) (dirs d))]
+        new-coords (mapv + (get-in s [:entities :player :coords]) delta)]
     ;;update state only if new coords are on the grid
     (when (contains? (:grid s) new-coords)
-      (swap! world-state assoc-in [:entities :player :coords] new-coords)
+      ;;update with new coords and coord change
+      (swap! world-state update-in [:entities :player] assoc :coords new-coords :delta delta)
       ;;swap returns new state, but we probably don't need it?
       {:move new-coords}
       )))
@@ -104,36 +108,73 @@
 
 ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
 ;;  this generates and returns that fn
-(defn pass-callback []
+(defn- pass-callback []
+  (fn [x y]
+    (contains? (:grid @world-state) [x y])))
+
+;; rot-js FOV needs a callback to determine if a cell is transparent
+(defn- light-callback []
   (fn [x y]
     (contains? (:grid @world-state) [x y])))
 
 ;; rot-js pathfinder builds a path using a callback fn to mutate an object
 ;;  this generates and returns that fn
-(defn path-callback [path-ref]
+(defn- path-callback [path-ref]
   (fn [x y]
     (swap! path-ref conj [x y])))
+
+;; rot-js FOV returns data using a callback
+;;   x and y coords, r = distance, v = visibility
+(defn- fov-callback [data-ref]
+  (fn [x y r v]
+    (swap! data-ref assoc [x y] v)
+    ))
+
+;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
+(defonce FOV-P (rot/FOV.PreciseShadowcasting. (light-callback)))
+
+;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
+(defonce FOV-R (rot/FOV.RecursiveShadowcasting. (light-callback)))
+
+;;fov functions used by entities
+(defn- fov-precise [{:keys [coords max-dist callback]}]
+  (.compute FOV-P (first coords) (second coords) max-dist callback))
+
+(defn- fov-180 [{:keys [coords max-dist dir callback]}]
+  (.compute180 FOV-R (first coords) (second coords) max-dist dir callback))
+
+(defn- fov-90 [{:keys [coords max-dist dir callback]}]
+  (.compute90 FOV-R (first coords) (second coords) max-dist dir callback))
+
+;; fov computation: takes an entity record
+;;   create temporary mutable ref for callback fn, then return clj map
+(defn compute-fov [{:keys [fov-fn coords vision delta]}]
+  (let [data-ref (atom {})
+        dir (.indexOf dirs delta)]
+    (fov-fn {:coords coords :max-dist vision :dir dir :callback (fov-callback data-ref)})
+    (into {} @data-ref)))
 
 ;; create a temporary mutable ref for rot-js pathfinder to use
 ;;   then return an ordinary clj vector
 ;; start and destination are coord pairs
 ;;   topo = # of movement directions
-(defn compute-path [[start-x start-y] [dest-x dest-y] topo]
+(defn- compute-path [[start-x start-y] [dest-x dest-y] topo]
   (let [astar (rot/Path.AStar. dest-x dest-y (pass-callback) #js{:topology topo})
         path-ref (atom [])]
     (.compute astar start-x start-y (path-callback path-ref))
-    (into [] @path-ref)
-    ))
+    (into [] @path-ref)))
 
 ;; mutate the :coords of the provided entity within world-state
 ;; path is a vector of coordinate pairs
 ;;   rot-js pathfinder includes the starting point as the first item in the path
 ;; returns remanining path length
-(defn follow-path! [entity-key [start-coords next-step & rest-of-path]]
+(defn- follow-path! [entity-key [start-coords next-step & rest-of-path]]
   (when next-step
-    (swap! world-state assoc-in [:entities entity-key :coords] next-step))
-  {:path-length (count rest-of-path)}
-  )
+    ;;save the change from previous coordinates
+    (let [delta (mapv - next-step (get-in @world-state [:entities entity-key :coords]))]
+      ;;update coordinates and coordinate change
+      (swap! world-state update-in [:entities entity-key] assoc :coords next-step :delta delta)))
+  {:path-length (count rest-of-path)})
 
 ;; entity behavior: move towards target entity
 ;;   modifies entity coords in world state

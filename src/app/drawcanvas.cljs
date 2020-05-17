@@ -7,25 +7,8 @@
 (def GRAB-DIMS [16 16])
 (def TILE-DIMS [24 24])
 
-;; mutable icons and colors for named keywords
+;; mutable drawing context
 ;;   may be read/written concurrently by other processes
-(defonce icons (atom {:player "@"
-                      :empty-grid "."
-                      :closed-box "o"
-                      :open-box "u"
-                      :ananas "a"
-                      ;:closed-box "☒"
-                      ;:open-box "☐"
-                      ;:ananas "🍍"
-                      :pedro "P"}))
-(defonce colors (atom {:player "#ff0"
-                       :empty-grid "#bbb"
-                       :closed-box "#4f6"
-                       :open-box "#4f6"
-                       :ananas "#ff0"
-                       :pedro "red"}))
-
-
 (defonce context (atom {
                         :ctx nil
                         :dims [0 0]
@@ -36,6 +19,12 @@
                                   "u" (mapv * GRAB-DIMS [11 6])
                                   "a" (mapv * GRAB-DIMS [32 10])
                                   "P" (mapv * GRAB-DIMS [28 4])}
+                        :icons {:player "@"
+                                :empty-grid "."
+                                :closed-box "o"
+                                :open-box "u"
+                                :ananas "a"
+                                :pedro "P"}
                         }))
 
  
@@ -64,19 +53,19 @@
                           :tiles tiles})
     out))
 
-(defn draw-tile [ctx tiles [sx sy] [grab-w grab-h] [x y] [tile-w tile-h]]
+(defn- draw-tile [ctx tiles [sx sy] [grab-w grab-h] [x y] [tile-w tile-h]]
   (.drawImage ctx tiles sx sy grab-w grab-h x y tile-w tile-h)
   )
 
-(defn clear-tile [ctx [x y] [tile-w tile-h]]
+(defn- clear-tile [ctx [x y] [tile-w tile-h]]
   (.clearRect ctx x y tile-w tile-h)
   )
 
 ;;draws a named object to xy coords contained in k
-(defn draw-kv [[k v]]
-  (let [{:keys [ctx tiles tilemap]} @context
+(defn- draw-kv [d-context [k v]]
+  (let [{:keys [ctx tiles tilemap icons]} d-context
         xy (mapv * k TILE-DIMS)
-        sxy (get tilemap (get @icons v))]
+        sxy (get tilemap (get icons v))]
     ;; clear first
     (clear-tile ctx xy TILE-DIMS)
     (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
@@ -85,34 +74,37 @@
 ;;draws a map of key-value pairs where each key is [x y] coords
 ;;  each value is a keyword
 ;;  doseq iterates through k-v pairs
-(defn draw-grid [mkvs]
+(defn- draw-grid [d-context mkvs]
   (doseq [m mkvs]
-    (draw-kv m)))
+    (draw-kv d-context m)))
 
 ;; an entity is a key-val pair
 ;;  where the val is a hashmap containing a :coords key
-(defn draw-entity [[k {:keys [coords]}]]
-  (let [{:keys [ctx tiles tilemap]} @context
+(defn- draw-entity [d-context [k {:keys [coords]}]]
+  (let [{:keys [ctx tiles tilemap icons]} d-context
         xy (mapv * coords TILE-DIMS)
-        sxy (get tilemap (get @icons k))]
+        sxy (get tilemap (get icons k))]
     (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
     ))
 
-(defn clear-canvas []
-  (let [{:keys [ctx dims]} @context
+(defn- clear-canvas [d-context]
+  (let [{:keys [ctx dims]} d-context
         [w h] dims]
     (.clearRect ctx 0 0 w h))
   )
 
 ;; draws grid and entities from scratch
 (defn re-draw [world-state]
-  (clear-canvas)
-  (draw-grid (:grid world-state))
-  (doseq [e (:entities world-state)] (draw-entity e))
-  )
+  (let [d-context @context]
+    (clear-canvas d-context)
+    (draw-grid d-context (:grid world-state))
+    (doseq [e (:entities world-state)] (draw-entity d-context e))
+    ))
 
 ;; used after an entity moves
 ;;  draws entity at current loc & redraws map at old loc
 (defn redraw-entity [world-state entity-key old-coords]
-  (draw-kv (find (:grid world-state) old-coords))
-  (draw-entity (find (:entities world-state) entity-key)))
+  (let [d-context @context]
+    (draw-kv d-context (find (:grid world-state) old-coords))
+    (draw-entity d-context (find (:entities world-state) entity-key))
+    ))
