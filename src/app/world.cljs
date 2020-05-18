@@ -3,7 +3,7 @@
     (:require ["rot-js" :as rot]
               [clojure.set :as set]))
 
-(declare chase! compute-fov fov-precise fov-90)
+(declare chase! compute-fov update-vis!)
 
 ;; just functions for querying and modifying world state
 ;;   probably shouldn't spawn any processes in here
@@ -16,10 +16,12 @@
 ;;    :action is any function that gets called on the entity's turn
 ;;    -- it is not really an "act" method
 (defonce world-state (atom {:grid {}
+                            :seen #{}
+                            :visible {}
                             :entities {:player {:id :player :type :local-player 
-                                                :fov-fn #(fov-precise %) :vision 10}
+                                                :fov-fn :fov-360 :vision 10}
                                        :pedro {:id :pedro :type :npc 
-                                               :fov-fn #(fov-90 %) :vision 5
+                                               :fov-fn :fov-90 :vision 5
                                                :action #(chase! :pedro :player)}}
                             }))
 
@@ -84,7 +86,11 @@
                         ;;update world state with location of ananas
                             (assoc :ananas (first box-keys))))
     ;; compute entities' fov based on starting info
-    (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
+    ;; threading macro (->) uses result of swap! as first arg to next function
+    (->
+     (swap! world-state update :entities update-all compute-fov)
+     (get-in [:entities :player :fov])
+     (update-vis!))
     ))
 
 ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
@@ -117,23 +123,33 @@
 ;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
 (defonce FOV-R (rot/FOV.RecursiveShadowcasting. (light-callback)))
 
-;;fov functions used by entities
-(defn- fov-precise [{:keys [coords max-dist callback]}]
-  (.compute FOV-P (first coords) (second coords) max-dist callback))
-
-(defn- fov-180 [{:keys [coords max-dist dir callback]}]
-  (.compute180 FOV-R (first coords) (second coords) max-dist dir callback))
-
-(defn- fov-90 [{:keys [coords max-dist dir callback]}]
-  (.compute90 FOV-R (first coords) (second coords) max-dist dir callback))
-
 ;; fov computation: takes an entity record
-;;   create temporary mutable ref for callback fn, then return clj map
-(defn compute-fov [{:keys [fov-fn coords vision delta]}]
+;; multimehtod dispatch based on :fov-fn
+(defmulti compute-fov #(:fov-fn %))
+
+;;fov functions used by entities
+;;  create a tmp mutable ref for callback fn, then returns entity with fov data
+(defmethod compute-fov :fov-360 [{:keys [coords vision] :as entity}]
   (let [data-ref (atom {})
+        [x y] coords]
+    (.compute FOV-P x y vision (fov-callback data-ref))
+    (assoc entity :fov @data-ref)
+    ))
+
+(defmethod compute-fov :fov-90 [{:keys [coords vision delta] :as entity}]
+  (let [data-ref (atom {})
+        [x y] coords
         dir (.indexOf dirs delta)]
-    (fov-fn {:coords coords :max-dist vision :dir dir :callback (fov-callback data-ref)})
-    (into {} @data-ref)))
+    (.compute90 FOV-R x y vision dir (fov-callback data-ref))
+    (assoc entity :fov @data-ref)
+    ))
+
+;;updates world visibility info based on given fov data
+(defn update-vis! [fovmap]
+  (swap! world-state #(-> %
+                          (assoc :visible fovmap)
+                          (update :seen into (keys fovmap))
+                          )))
 
 ;; create a temporary mutable ref for rot-js pathfinder to use
 ;;   then return an ordinary clj vector
@@ -158,7 +174,7 @@
              assoc :coords next-step :delta delta)
       ;;update fov using new info
       ;;TODO put this in a general "move" fn
-      (swap! world-state update-in [:entities entity-key] #(assoc % :fov (compute-fov %)))
+      (swap! world-state update-in [:entities entity-key] compute-fov)
       ))
   {:path-length (count rest-of-path)})
 
@@ -186,9 +202,13 @@
       ;;update with new coords and coord change
       (swap! world-state update-in [:entities :player] assoc :coords new-coords :delta delta)
       ;;update fov using new info
+      ;;and update world visbility based on fov
       ;;TODO put this in a general "move" fn
-      (swap! world-state update-in [:entities :player] #(assoc % :fov (compute-fov %)))
-      ;;swap returns new state, but we probably don't need it?
+      (->
+       (swap! world-state update-in [:entities :player] compute-fov)
+       (get-in [:entities :player :fov])
+       (update-vis!))
+      ;;return move info
       {:move new-coords})))
 
 ;; if the player is on a closed box, open it and check for ananas

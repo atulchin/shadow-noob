@@ -3,7 +3,7 @@
   (:require ["rot-js" :as rot]
             [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]
             [app.world :as world :refer [world-state init-grid! move-player! open-box!]]
-            [app.drawcanvas :as draw :refer [init-disp! redraw-entity re-draw]]))
+            [app.drawcanvas :as draw :refer [init-disp! re-draw]]))
 
 (defonce key-chan (chan)) ;;channel for processing keyboard input
 
@@ -43,6 +43,8 @@
 ;; (<! key-chan) will park until another fn puts something on key-chan
 ;; immediately returns out channel
 (defmethod take-turn :local-player [_]
+  ;;draw current map at start of player's turn
+  (re-draw @world-state)
   (let [out (chan)]
     (go-loop []
       ;;wait for a code from key-chan
@@ -95,8 +97,8 @@
       (game-rules result)
       ;;redraw changes made by current entity; (:coords entity) is the old position
       ;(redraw-entity @world-state entity-key (:coords entity))
-      ;TODO: is it worth keeping track of what needs to be redrawn?
-      (re-draw @world-state)
+      ;may be more to redraw (fov, lighting, etc)
+      ;  instead of keeping track, just redraw everything at start of player's turn
       ;;pass result to output channel
       (>! ch result))
     (recur (.next scheduler))))
@@ -139,9 +141,5 @@
 (defn reload! []
   (re-draw @world-state)
   )
-
-
-
-
 
 
