@@ -1,7 +1,7 @@
 
 (ns app.main
   (:require ["rot-js" :as rot]
-            [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]
+            [clojure.core.async :as a :refer [>! <! put! go go-loop chan dropping-buffer]]
             [app.world :as world :refer [world-state move-player! open-box!]]
             [app.drawcanvas :as draw :refer [render-ui]]))
 
@@ -12,26 +12,27 @@
 
 ;;channels for processing keyboard input
 ;;  key-chan is read by the main game screen
-(defonce key-chan (chan))
+(defonce key-chan (chan (dropping-buffer 5)))
 ;;  dialog-chan is read by ui dialogs/menus
-(defonce dialog-chan (chan))
+(defonce dialog-chan (chan (dropping-buffer 5)))
 ;; a channel to ensure that rendering does not happen until the 
 ;;   effects of ui inputs are processed (e.g., loading graphics)
-(defonce control-ch (chan))
+(defonce control-ch (chan (dropping-buffer 3)))
 
 ;; ui components, named by keyword
 ;;   effect fns are defined below
 (declare set-option! new-game! about! char-menu! db)
 (def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(char-menu!)}
                                  {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
+                    ;; elements send data as functions (called by rendering fn)
                     :char-menu [{:id :label :pos 0 :type :button :txt "Choose One"}
                                 {:id :opt1 :pos 1 :type :checkbox :txt "Speed" :data #(get-in @db [:options :speed]) :effect #(set-option! :speed true :vision false)}
                                 {:id :opt2 :pos 2 :type :checkbox :txt "Vision" :data #(get-in @db [:options :vision]) :effect #(set-option! :speed false :vision true)}
-                                {:id :ok :pos 3 :type :button :txt "[  OK  ]" :effect #(new-game!)}]
+                                {:id :ok :pos 3 :type :button :txt "   [  OK  ]" :effect #(new-game!)}]
                     ;; game-screen component contains a reference to world-state atom
                     :game-screen [{:id :world-map :type :grid :data #(deref world/world-state)}]})
 
-;; all info needed for generating the interface
+;; db should contain all info needed for generating the interface
 (defonce db (atom {:ui-components ui-components
                    :keychan dialog-chan
                    :focused [:start-menu 0]
@@ -203,8 +204,11 @@
 
 ;;called by dialog-loop
 (defn dialog-input [code]
-  (when-let [f (get dialog-keymap code)]
-    (f)))
+  (if-let [f (get dialog-keymap code)]
+    (f)
+    ;; key does nothing, ok to proceed
+    (put! control-ch true)
+    ))
 
 ;;spawns a process that listens for keyboard codes sent to dialog-chan
 (defn dialog-loop []
