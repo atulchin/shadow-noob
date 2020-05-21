@@ -1,13 +1,13 @@
 
 (ns app.world
     (:require ["rot-js" :as rot]
-              [clojure.set :as set]))
+              [clojure.set :as set]
+              [app.utils :as utils :refer [assoc-multi update-all sample]]))
 
 (declare chase! compute-fov update-vis!)
 
 ;; just functions for querying and modifying world state
 ;;   probably shouldn't spawn any processes in here
-
 
 ;; mutable world state
 ;;   may be read/written concurrently by outside processes
@@ -28,23 +28,6 @@
 
 (defn reset-state []
   (reset! world-state init-state))
-
-;; modifying multiple keys in a hashmap
-;;   with a static value v:
-(defn assoc-multi [coll ks v]
-  (reduce #(assoc %1 %2 v) coll ks))
-
-;;   with a function of the current value:
-(defn update-multi [coll ks f]
-  (reduce #(update %1 %2 f) coll ks))
-
-;; updates all keys in coll
-(defn update-all [coll f]
-  (update-multi coll (keys coll) f))
-
-;; n random items from a collection
-(defn sample [n coll]
-  (take n (shuffle coll)))
 
 ;; grid directions are stored in rot-js as a javascript object
 ;;   convert to clj vector
