@@ -21,15 +21,15 @@
 
 ;; ui components, named by keyword
 ;;   effect fns are defined below
-(declare set-option! new-game! about! char-menu! db)
+(declare set-option! new-game! about! char-menu! menu! db)
 (def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(char-menu!)}
                                  {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
                     ;; elements send data as functions (called by rendering fn)
                     :char-menu [{:id :label :pos 0 :type :button :txt "Choose One"}
                                 {:id :opt1 :pos 1 :type :checkbox :txt "Speed" :data #(get-in @db [:options :speed]) :effect #(set-option! :speed true :vision false)}
                                 {:id :opt2 :pos 2 :type :checkbox :txt "Vision" :data #(get-in @db [:options :vision]) :effect #(set-option! :speed false :vision true)}
-                                {:id :ok :pos 3 :type :button :txt "   [  OK  ]" :effect #(new-game!)}]
-                    ;; game-screen component contains a reference to world-state atom
+                                {:id :ok :pos 3 :type :button :txt " [  OK  ]" :effect #(new-game!)}]
+                    ;; game-screen component contains a fn that queries world-state
                     :game-screen [{:id :world-map :type :grid :data #(deref world/world-state)}]})
 
 ;; db should contain all info needed for generating the interface
@@ -54,7 +54,8 @@
              [40] #(move-player! 4)
              [:shift 40] #(move-player! 5)
              [13] #(open-box!)
-             [32] #(open-box!)})
+             [32] #(open-box!)
+             [27] #(menu!)})
 
 ;;called on player's turn to process input
 (defn handle-input [code]
@@ -147,6 +148,7 @@
 ;;   applying the 2nd statement if the 1st is true
 ;;   cond-> [] with conj statements is a way to build up a vector
 (defn key-event [e]
+  ;(println (. e -keyCode))
   (put! (:keychan @db)
         (cond-> []
           (. e -shiftKey) (conj :shift)
@@ -155,18 +157,34 @@
 
 ;; functions called by ui components
 (defn new-game! []
+  ;;transfer control to game screen
   (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background [])
-  ;;init will send the ok to the control channel
-  (world/init-grid! (:dims @db))
+  ;;(re)set world state
+  (world/reset-state)
+  ;;apply options set through UI
   (game-options! (:options @db))
+  ;;generate the game world
+  (world/init-grid! (:dims @db))
+  ;;display has already been init'ed, just reset defaults
+  (draw/reset-defaults)
+  ;;start the game
   (start-turn-loop)
-  ;; ok to proceed
+  ;; ok to render
   (put! control-ch true))
 
 (defn about! []
   (println "about")
   ;; ok to proceed
   (put! control-ch true))
+
+(defn menu! []
+  ;; transfer control to menu
+  (swap! db assoc :keychan dialog-chan :focused [:start-menu 0] :background [:game-screen])
+  ;; force re-render to make menu appear
+  (render-ui @db)
+  ;; opening the menu isn't really an action, so return nil
+  nil
+  )
 
 (defn char-menu! []
   (swap! db assoc :focused [:char-menu 0] :background [])

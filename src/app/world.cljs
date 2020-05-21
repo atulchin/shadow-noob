@@ -15,15 +15,19 @@
 ;;    -- this allows for cleaner code in some places & avoids searching
 ;;    :action is any function that gets called on the entity's turn
 ;;    -- it is not really an "act" method
-(defonce world-state (atom {:grid {}
-                            :seen #{}
-                            :visible {}
-                            :entities {:player {:id :player :type :local-player 
-                                                :fov-fn :fov-360 :vision 10 :diag-time 14}
-                                       :pedro {:id :pedro :type :npc 
-                                               :fov-fn :fov-90 :vision 5
-                                               :action #(chase! :pedro :player)}}
-                            }))
+(defonce world-state (atom {}))
+(def init-state {:grid {}
+                        :seen #{}
+                        :visible {}
+                        :entities {:player {:id :player :type :local-player 
+                                            :fov-fn :fov-360 :vision 10 :diag-time 14}
+                                   :pedro {:id :pedro :type :npc 
+                                           :fov-fn :fov-90 :vision 5
+                                           :action #(chase! :pedro :player)}}
+                        })
+
+(defn reset-state []
+  (reset! world-state init-state))
 
 ;; modifying multiple keys in a hashmap
 ;;   with a static value v:

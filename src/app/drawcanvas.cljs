@@ -12,19 +12,24 @@
 (defonce context (atom {:ctx nil
                         :dims [0 0]
                         :tiles nil
-                        :tilemap {"@" (mapv * GRAB-DIMS [25 0])
-                                  "." (mapv * GRAB-DIMS [11 0])
-                                  "o" (mapv * GRAB-DIMS [10 6])
-                                  "u" (mapv * GRAB-DIMS [11 6])
-                                  "a" (mapv * GRAB-DIMS [32 10])
-                                  "P" (mapv * GRAB-DIMS [28 4])}
-                        :icons {:player "@"
-                                :empty-grid "."
-                                :closed-box "o"
-                                :open-box "u"
-                                :ananas "a"
-                                :pedro "P"}}))
+                        :tilemap {}
+                        :icons {}}))
 
+(def defaults {:tilemap {"@" (mapv * GRAB-DIMS [25 0])
+                           "." (mapv * GRAB-DIMS [11 0])
+                           "o" (mapv * GRAB-DIMS [10 6])
+                           "u" (mapv * GRAB-DIMS [11 6])
+                           "a" (mapv * GRAB-DIMS [32 10])
+                           "P" (mapv * GRAB-DIMS [28 4])}
+                 :icons {:player "@"
+                         :empty-grid "."
+                         :closed-box "o"
+                         :open-box "u"
+                         :ananas "a"
+                         :pedro "P"}})
+
+(defn reset-defaults []
+  (swap! context merge defaults))
 
 ;;set display options and add it to the document body
 (defn init-disp! [[w h]]
