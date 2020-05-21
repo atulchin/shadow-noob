@@ -19,7 +19,7 @@
                             :seen #{}
                             :visible {}
                             :entities {:player {:id :player :type :local-player 
-                                                :fov-fn :fov-360 :vision 10}
+                                                :fov-fn :fov-360 :vision 10 :diag-time 14}
                                        :pedro {:id :pedro :type :npc 
                                                :fov-fn :fov-90 :vision 5
                                                :action #(chase! :pedro :player)}}
@@ -209,7 +209,9 @@
        (get-in [:entities :player :fov])
        (update-vis!))
       ;;return move info
-      {:move new-coords})))
+      {:move new-coords
+       :time (if (get #{1 3 5 7} d) (get-in s [:entities :player :diag-time]) 10)}
+      )))
 
 ;; if the player is on a closed box, open it and check for ananas
 ;;   returns box contents if a box was opened, otherwise nil

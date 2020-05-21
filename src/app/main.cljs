@@ -2,25 +2,34 @@
 (ns app.main
   (:require ["rot-js" :as rot]
             [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]
-            [app.world :as world :refer [move-player! open-box!]]
+            [app.world :as world :refer [world-state move-player! open-box!]]
             [app.drawcanvas :as draw :refer [render-ui]]))
 
 ;; this file is for user inteface & interaction w/ game state
 
+;; TODO: game logic also lives here for now, may move it
+(declare game-rules! game-options!)
+
 ;;channels for processing keyboard input
 ;;  key-chan is read by the main game screen
-(defonce key-chan (chan)) 
+(defonce key-chan (chan))
 ;;  dialog-chan is read by ui dialogs/menus
 (defonce dialog-chan (chan))
+;; a channel to ensure that rendering does not happen until the 
+;;   effects of ui inputs are processed (e.g., loading graphics)
+(defonce control-ch (chan))
 
 ;; ui components, named by keyword
 ;;   effect fns are defined below
-(declare new-game! about!)
-(def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(new-game!)}
+(declare set-option! new-game! about! char-menu! db)
+(def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(char-menu!)}
                                  {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
-                    ;; game-screen componenet contains a reference to world-state atom
-                    :game-screen [{:id :world-map :type :grid :data-ref world/world-state}]
-                    })
+                    :char-menu [{:id :label :pos 0 :type :button :txt "Choose One"}
+                                {:id :opt1 :pos 1 :type :checkbox :txt "Speed" :data #(get-in @db [:options :speed]) :effect #(set-option! :speed true :vision false)}
+                                {:id :opt2 :pos 2 :type :checkbox :txt "Vision" :data #(get-in @db [:options :vision]) :effect #(set-option! :speed false :vision true)}
+                                {:id :ok :pos 3 :type :button :txt "[  OK  ]" :effect #(new-game!)}]
+                    ;; game-screen component contains a reference to world-state atom
+                    :game-screen [{:id :world-map :type :grid :data #(deref world/world-state)}]})
 
 ;; all info needed for generating the interface
 (defonce db (atom {:ui-components ui-components
@@ -28,7 +37,11 @@
                    :focused [:start-menu 0]
                    :background []
                    :dims [60 40]
-                   }))
+                   :options {}}))
+
+(defn set-option! [& opts]
+  (swap! db update :options #(apply assoc % opts))
+  (put! control-ch true))
 
 ;;maps input codes to functions
 (def keymap {[37] #(move-player! 6)
@@ -84,23 +97,13 @@
         (>! out result)))
     out))
 
-;; put game rule logic in this fn for now
-(defn game-rules! [result]
-  (cond
-    (:ananas result) (do
-                       (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
-                       (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :ananas]))))
-    (= 0 (:path-length result)) (do
-                                  (js/alert "Pedro has caught you!\n\nYOU ARE THE NEW PEDRO!")
-                                  (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :pedro])))
-                                  (swap! world/world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip})))))
-
 ;; turn-loop spawns a looping process that allocates game turns
 (defn turn-loop [scheduler ch]
   ;; get the next entity key from the scheduler
-  (go-loop [entity-key (.next scheduler)]
+  (go-loop []
           ;;save a snapshot of the world state
-    (let [state (deref world/world-state)
+    (let [entity-key (.next scheduler)
+          state @world-state
           ;;save a snapshot of the entity
           entity (get-in state [:entities entity-key])
           ;; (take-turn) will change the world state, puts result on a channel
@@ -110,30 +113,32 @@
                    {entity-key false})]
       ;; apply game rules based on the result or the world-state
       (game-rules! result)
-      
+
+      ;; if result includes :time, set action duration in scheduler
+      ;;   otherwise default duration
+      (.setDuration scheduler (or (:time result) 10))
+
       ;; instead of redrawing changes caused by the entity's turn 
       ;;    here (could be lots), just redraw everything at start
       ;;    of player's turn
       
       ;;pass result to output channel
       (>! ch result))
-    (recur (.next scheduler))
-    ))
+    (recur)))
 
 ;; creates and populates a rot-js scheduler
 ;;   passes it to turn-loop
 (defn start-turn-loop []
   (let [debug-ch (chan)
-        scheduler (rot/Scheduler.Simple.)
-        state (deref world/world-state)]
+        scheduler (rot/Scheduler.Action.)
+        state @world-state]
     ;;must add entity keys to the scheduler, not the entities themselves
     ;;-- clj data structures are immutable; entities added would just be snapshots
     (doseq [k (keys (:entities state))]
       (.add scheduler k true))
     (turn-loop scheduler debug-ch)
     ;;start a process to montior the output channel
-    (go (while true (println (<! debug-ch))))
-    ))
+    (go (while true (println (<! debug-ch))))))
 
 ;; translates javascript keyboard event to input code
 ;; puts it on the channel specified in UI database
@@ -145,18 +150,14 @@
         (cond-> []
           (. e -shiftKey) (conj :shift)
           (. e -ctrlKey) (conj :ctrl)
-          :always (conj (. e -keyCode))
-          )))
-
-;; a channel to ensure that rendering does not happen until the 
-;;   effects of ui inputs are processed (e.g., loading graphics)
-(defonce control-ch (chan))
+          :always (conj (. e -keyCode)))))
 
 ;; functions called by ui components
 (defn new-game! []
   (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background [])
   ;;init will send the ok to the control channel
   (world/init-grid! (:dims @db))
+  (game-options! (:options @db))
   (start-turn-loop)
   ;; ok to proceed
   (put! control-ch true))
@@ -164,6 +165,10 @@
 (defn about! []
   (println "about")
   ;; ok to proceed
+  (put! control-ch true))
+
+(defn char-menu! []
+  (swap! db assoc :focused [:char-menu 0] :background [])
   (put! control-ch true))
 
 ;; ui controls
@@ -175,18 +180,18 @@
            (cond
              (< x 0) [comp-key (+ x n)]
              (>= x n) [comp-key (- x n)]
-             :else [comp-key x])
-           )
+             :else [comp-key x]))
     ;; ok to proceed
-    (put! control-ch true)
-    ))
+    (put! control-ch true)))
 
 (defn click! []
-  (let [{ui-comps :ui-components key-vec :focused} @db]
-    (when-let [comp (get-in ui-comps key-vec)]
-    ;; the effect must send a result to control channel
-      ((:effect comp))
-      )))
+  (let [{ui-comps :ui-components key-vec :focused} @db
+        comp (get-in ui-comps key-vec)]
+    (if-let [f (:effect comp)]
+      ;; the effect must send a result to control channel
+      (f)
+      ;; else, comp has no effect, ok to proceed
+      (put! control-ch true))))
 
 ;;maps input codes to functions for dialogs/menus
 (def dialog-keymap {[37] #(move-focus! -1)
@@ -208,8 +213,7 @@
       (dialog-input code)
       ;;render new ui state after every dialog input
       (when (<! control-ch) (render-ui @db))
-      (recur)
-      )))
+      (recur))))
 
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
@@ -217,13 +221,31 @@
   (dialog-loop)
   (go
     (when (<! (draw/init-disp! (:dims @db)))
-      (render-ui @db)))
-  )
+      (render-ui @db))))
 
 ;; hot reload; called by shadow-cljs when code is saved
 ;;   object state is preserved
 (defn reload! []
-  (render-ui @db)
-  )
+  (render-ui @db))
 
 
+
+;; put game rule logic in this fn for now
+(defn game-rules! [result]
+  (cond
+    (:ananas result) (do
+                       (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
+                       (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :ananas]))))
+    (= 0 (:path-length result)) (do
+                                  (js/alert "Pedro has caught you!\n\nYOU ARE THE NEW PEDRO!")
+                                  (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :pedro])))
+                                  (swap! world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip})))))
+
+
+;; put game option logic in this fn for now
+(defn game-options! [{:keys [speed vision]}]
+  (swap! world-state update-in [:entities :player]
+         #(assoc %
+                 :fov-fn (if vision :fov-360 :fov-90)
+                 :diag-time (if speed 10 14)
+                 )))

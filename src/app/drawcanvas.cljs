@@ -164,14 +164,24 @@
 ;;   draws different things depending on :type key
 (defmulti draw-element #(:type %))
 
-;; :type :grid draws the world grid
-(defmethod draw-element :grid [{:keys [data-ref]}]
-  (draw-visible @data-ref))
+;; :type :grid draws the world grid 
+;;   (element's :data key is a function that returns it)
+(defmethod draw-element :grid [{:keys [data]}]
+  (draw-visible (data)))
 
 ;; :type :button draws a text button
+;;   element's :data key contains a function
 (defmethod draw-element :button [{:keys [txt pos focused?]}]
+  (draw-text (:ctx @context)
+             txt
+             (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
+             (if focused? [255 255 80] [180 180 180])))
+
+;; :type :checkbox
+;;   element's :data key contains a function
+(defmethod draw-element :checkbox [{:keys [txt pos focused? data] :or {data (fn [_] nil)}}]
   (draw-text (:ctx @context) 
-             txt 
+             (str (if (data) "[*] " "[ ] ") txt) 
              (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
              (if focused? [255 255 80] [180 180 180])
              ))
