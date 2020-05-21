@@ -65,7 +65,7 @@
   (assoc-multi grid ks :closed-box))
 
 ;; create a starting map
-(defn init-grid! [w h]
+(defn init-grid! [[w h]]
   (let [grid (generate-grid (rot/Map.Digger. w h)) ;;initial map
         grid-keys (keys grid)
         box-keys (sample 5 grid-keys)  ;;random locations for boxes

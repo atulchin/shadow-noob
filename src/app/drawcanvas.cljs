@@ -27,7 +27,7 @@
 
 
 ;;set display options and add it to the document body
-(defn init-disp! [w h]
+(defn init-disp! [[w h]]
   ;;this fn can return before tiles are loaded
   ;;  return a channel that lets us know when tiles are ready to draw
   (let [out (chan)
@@ -36,6 +36,7 @@
         tiles (.createElement js/document "img")
         dims (mapv * TILE-DIMS [w h])]
 
+    ;; tiles .onload event sends signal to out channel
     (set! (. tiles -onload) #(put! out true))
     (set! (. tiles -src) "bitpack.png")
     (set! (. canvas -width) (first dims))
@@ -43,6 +44,7 @@
     (set! (. ctx -imageSmoothingEnabled) false)
     (set! (. ctx -mozImageSmoothingEnabled) false)
     (set! (. ctx -webkitImageSmoothingEnabled) false)
+    (set! (. ctx -font) "24px monospace")
 
     ;;append canvas to the html body
     (.appendChild (. js/document -body) canvas)
@@ -65,54 +67,61 @@
   (set! (. ctx -fillStyle) (color-str color))
   (.fillRect ctx x y w h))
 
+(defn- draw-text [ctx txt [x y] color]
+  (set! (. ctx -fillStyle) (color-str color))
+  (.fillText ctx txt x y))
+
 ;;draws a yellow glow based on k-v data
 ;;  keys are coords; vals are light intensity
 (defn draw-glow [mkvs]
   (let [{:keys [ctx]} @context]
     (doseq [[k v] mkvs]
-      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [255 255 0 (* v 0.2)]))))
+      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [255 255 0 (* v 0.2)])
+      )))
 
 ;;draws shadows based on k-v data
 ;; keys are coords; vals are light intensity
 (defn draw-shadow [mkvs]
   (let [{:keys [ctx]} @context]
     (doseq [[k v] mkvs]
-      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [0 0 0 (* 0.5 (- 1.0 v))]))))
+      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [0 0 0 (* 0.5 (- 1.0 v))])
+      )))
 
 ;;draws a steady shadow over the coords in the given vector
 (defn draw-dark [vec]
   (let [{:keys [ctx]} @context]
     (doseq [k vec]
-      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [0 0 0 0.6]))))
+      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [0 0 0 0.6])
+      )))
 
 ;;draws a named object to xy coords contained in k
-(defn- draw-kv [d-context [k v]]
+(defn- draw-coords [d-context [k v]]
   (let [{:keys [ctx tiles tilemap icons]} d-context
         xy (mapv * k TILE-DIMS)
         sxy (get tilemap (get icons v))]
     ;; clear first
     (clear-tile ctx xy TILE-DIMS)
-    (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)))
+    (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
+    ))
 
 ;;draws a map of key-value pairs where each key is [x y] coords
 ;;  each value is a keyword
 ;;  doseq iterates through k-v pairs
-(defn- draw-grid [d-context mkvs]
+(defn- draw-mkvs [d-context mkvs]
   (doseq [m mkvs]
-    (draw-kv d-context m)))
+    (draw-coords d-context m)))
 
 ;;limits drawing to the coords present in visibility map
-(defn- draw-visible-grid [d-context full-grid vismap]
+(defn- draw-vis-grid [d-context full-grid vismap]
   (let [mkvs (select-keys full-grid (keys vismap))]
-    (draw-grid d-context mkvs)
+    (draw-mkvs d-context mkvs)
     (draw-shadow vismap)))
 
 ;;draws previously visible coords (listed in seen-set) overlaid with shadow
 (defn- draw-seen [d-context full-grid seen-set]
   (let [mkvs (select-keys full-grid seen-set)]
-    (draw-grid d-context mkvs)
+    (draw-mkvs d-context mkvs)
     (draw-dark seen-set)))
-
 
 ;; an entity is a key-val pair
 ;;  where the val is a hashmap containing a :coords key
@@ -130,34 +139,58 @@
         [w h] dims]
     (.clearRect ctx 0 0 w h)))
 
-;; draws grid and entities from scratch
+;; draws grid and entities
 ;;   in the "visible" area of the world grid only
-(defn re-draw-vis [world-state]
+(defn draw-visible [world-state]
   (let [d-context @context]
-    (clear-canvas d-context)
     ;;draw previously seen areas first
     (draw-seen d-context (:grid world-state) (:seen world-state))
     ;;then draw over those with currently visible area
-    (draw-visible-grid d-context (:grid world-state) (:visible world-state))
+    (draw-vis-grid d-context (:grid world-state) (:visible world-state))
     ;;draw entities whose coords are in the visible area
     (doseq [e (:entities world-state)]
       (when (get (:visible world-state) (:coords (val e)))
-        (draw-entity d-context e)))))
+        (draw-entity d-context e))
+      )))
 
-;;   the entire grid
-(defn re-draw-full [world-state]
+;;   the entire world grid & all entities
+(defn draw-full [world-state]
   (let [d-context @context]
-    (clear-canvas d-context)
-    (draw-grid d-context (:grid world-state))
-    (doseq [e (:entities world-state)] (draw-entity d-context e))))
+    (draw-mkvs d-context (:grid world-state))
+    (doseq [e (:entities world-state)] (draw-entity d-context e))
+    ))
 
-;; called in main
-(def re-draw re-draw-vis)
+;; draw-element multimethod
+;;   draws different things depending on :type key
+(defmulti draw-element #(:type %))
 
-;; used after an entity moves
-;;  draws entity at current loc & redraws map at old loc
-#_(defn redraw-entity [world-state entity-key old-coords]
-    (let [d-context @context]
-      (draw-kv d-context (find (:grid world-state) old-coords))
-      (draw-entity d-context (find (:entities world-state) entity-key))))
+;; :type :grid draws the world grid
+(defmethod draw-element :grid [{:keys [data-ref]}]
+  (draw-visible @data-ref))
+
+;; :type :button draws a text button
+(defmethod draw-element :button [{:keys [txt pos focused?]}]
+  (draw-text (:ctx @context) 
+             txt 
+             (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
+             (if focused? [255 255 80] [180 180 180])
+             ))
+
+;; called by render-ui, takes collection of elements to draw
+(defn draw-group [coll focused-elem]
+  (doseq [x coll]
+    (draw-element (assoc x :focused? (= x focused-elem)))
+    ))
+
+;; called from main, takes UI db
+(defn render-ui [{:keys [ui-components background focused]}]
+  (clear-canvas @context)
+  (let [[fg-key _] focused]
+    ;;do background comps first
+    (doseq [k background]
+      ;;iterate through items within the component (no item is focused here)
+      (draw-group (get ui-components k) nil))
+    ;;render the focused comp on top; focused sub-element may be drawn differently
+    (draw-group (get ui-components fg-key) (get-in ui-components focused))
+    ))
 

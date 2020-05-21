@@ -2,17 +2,33 @@
 (ns app.main
   (:require ["rot-js" :as rot]
             [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]
-            [app.world :as world :refer [world-state init-grid! move-player! open-box!]]
-            [app.drawcanvas :as draw :refer [init-disp! re-draw]]))
+            [app.world :as world :refer [move-player! open-box!]]
+            [app.drawcanvas :as draw :refer [render-ui]]))
 
-(defonce key-chan (chan)) ;;channel for processing keyboard input
+;; this file is for user inteface & interaction w/ game state
 
-;;initialize world-map and interface with given width and height
-(defn init [w h]
-  (go
-    (init-grid! w h)
-    (when (<! (init-disp! w h))
-      (re-draw @world-state))))
+;;channels for processing keyboard input
+;;  key-chan is read by the main game screen
+(defonce key-chan (chan)) 
+;;  dialog-chan is read by ui dialogs/menus
+(defonce dialog-chan (chan))
+
+;; ui components, named by keyword
+;;   effect fns are defined below
+(declare new-game! about!)
+(def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(new-game!)}
+                                 {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
+                    ;; game-screen componenet contains a reference to world-state atom
+                    :game-screen [{:id :world-map :type :grid :data-ref world/world-state}]
+                    })
+
+;; all info needed for generating the interface
+(defonce db (atom {:ui-components ui-components
+                   :keychan dialog-chan
+                   :focused [:start-menu 0]
+                   :background []
+                   :dims [60 40]
+                   }))
 
 ;;maps input codes to functions
 (def keymap {[37] #(move-player! 6)
@@ -37,14 +53,13 @@
 ;;   methods for specific values of :type are defined below
 (defmulti take-turn #(:type %))
 
-
 ;; this method is called on the player's turn & waits for keyboard input
 ;; go-loop spawns a process that will eventually put something on out channel
 ;; (<! key-chan) will park until another fn puts something on key-chan
 ;; immediately returns out channel
 (defmethod take-turn :local-player [_]
-  ;;draw current map at start of player's turn
-  (re-draw @world-state)
+  ;;re-render ui (including game map) at start of player's turn
+  (render-ui @db)
   (let [out (chan)]
     (go-loop []
       ;;wait for a code from key-chan
@@ -70,7 +85,7 @@
     out))
 
 ;; put game rule logic in this fn for now
-(defn game-rules [result]
+(defn game-rules! [result]
   (cond
     (:ananas result) (do
                        (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
@@ -78,14 +93,14 @@
     (= 0 (:path-length result)) (do
                                   (js/alert "Pedro has caught you!\n\nYOU ARE THE NEW PEDRO!")
                                   (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :pedro])))
-                                  (swap! world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip})))))
+                                  (swap! world/world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip})))))
 
 ;; turn-loop spawns a looping process that allocates game turns
 (defn turn-loop [scheduler ch]
   ;; get the next entity key from the scheduler
   (go-loop [entity-key (.next scheduler)]
           ;;save a snapshot of the world state
-    (let [state @world-state
+    (let [state (deref world/world-state)
           ;;save a snapshot of the entity
           entity (get-in state [:entities entity-key])
           ;; (take-turn) will change the world state, puts result on a channel
@@ -94,52 +109,121 @@
                    (<! (take-turn entity))
                    {entity-key false})]
       ;; apply game rules based on the result or the world-state
-      (game-rules result)
-      ;;redraw changes made by current entity; (:coords entity) is the old position
-      ;(redraw-entity @world-state entity-key (:coords entity))
-      ;may be more to redraw (fov, lighting, etc)
-      ;  instead of keeping track, just redraw everything at start of player's turn
+      (game-rules! result)
+      
+      ;; instead of redrawing changes caused by the entity's turn 
+      ;;    here (could be lots), just redraw everything at start
+      ;;    of player's turn
+      
       ;;pass result to output channel
       (>! ch result))
-    (recur (.next scheduler))))
+    (recur (.next scheduler))
+    ))
 
 ;; creates and populates a rot-js scheduler
 ;;   passes it to turn-loop
 (defn start-turn-loop []
   (let [debug-ch (chan)
-        scheduler (rot/Scheduler.Simple.)]
+        scheduler (rot/Scheduler.Simple.)
+        state (deref world/world-state)]
     ;;must add entity keys to the scheduler, not the entities themselves
     ;;-- clj data structures are immutable; entities added would just be snapshots
-    (doseq [k (keys (:entities @world-state))]
+    (doseq [k (keys (:entities state))]
       (.add scheduler k true))
     (turn-loop scheduler debug-ch)
     ;;start a process to montior the output channel
-    (go (while true (println (<! debug-ch))))))
+    (go (while true (println (<! debug-ch))))
+    ))
 
 ;; translates javascript keyboard event to input code
+;; puts it on the channel specified in UI database
 ;;   the cond-> macro threads its first argument through pairs of statements
 ;;   applying the 2nd statement if the 1st is true
 ;;   cond-> [] with conj statements is a way to build up a vector
 (defn key-event [e]
-  (put! key-chan
+  (put! (:keychan @db)
         (cond-> []
           (. e -shiftKey) (conj :shift)
           (. e -ctrlKey) (conj :ctrl)
-          :always (conj (. e -keyCode)))))
+          :always (conj (. e -keyCode))
+          )))
 
+;; a channel to ensure that rendering does not happen until the 
+;;   effects of ui inputs are processed (e.g., loading graphics)
+(defonce control-ch (chan))
 
+;; functions called by ui components
+(defn new-game! []
+  (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background [])
+  ;;init will send the ok to the control channel
+  (world/init-grid! (:dims @db))
+  (start-turn-loop)
+  ;; ok to proceed
+  (put! control-ch true))
+
+(defn about! []
+  (println "about")
+  ;; ok to proceed
+  (put! control-ch true))
+
+;; ui controls
+(defn move-focus! [i]
+  (let [{ui-comps :ui-components [comp-key idx] :focused} @db
+        n (count (get ui-comps comp-key))
+        x (+ i idx)]
+    (swap! db assoc :focused
+           (cond
+             (< x 0) [comp-key (+ x n)]
+             (>= x n) [comp-key (- x n)]
+             :else [comp-key x])
+           )
+    ;; ok to proceed
+    (put! control-ch true)
+    ))
+
+(defn click! []
+  (let [{ui-comps :ui-components key-vec :focused} @db]
+    (when-let [comp (get-in ui-comps key-vec)]
+    ;; the effect must send a result to control channel
+      ((:effect comp))
+      )))
+
+;;maps input codes to functions for dialogs/menus
+(def dialog-keymap {[37] #(move-focus! -1)
+                    [38] #(move-focus! -1)
+                    [39] #(move-focus! 1)
+                    [40] #(move-focus! 1)
+                    [13] #(click!)
+                    [32] #(click!)})
+
+;;called by dialog-loop
+(defn dialog-input [code]
+  (when-let [f (get dialog-keymap code)]
+    (f)))
+
+;;spawns a process that listens for keyboard codes sent to dialog-chan
+(defn dialog-loop []
+  (go-loop []
+    (let [code (<! dialog-chan)]
+      (dialog-input code)
+      ;;render new ui state after every dialog input
+      (when (<! control-ch) (render-ui @db))
+      (recur)
+      )))
 
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
-  (init 60 40)
   (. js/document addEventListener "keydown" key-event)
-  (start-turn-loop)
+  (dialog-loop)
+  (go
+    (when (<! (draw/init-disp! (:dims @db)))
+      (render-ui @db)))
   )
 
 ;; hot reload; called by shadow-cljs when code is saved
 ;;   object state is preserved
 (defn reload! []
-  (re-draw @world-state)
+  (render-ui @db)
   )
 
 
