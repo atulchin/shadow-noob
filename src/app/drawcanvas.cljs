@@ -191,10 +191,17 @@
              (if focused? [255 255 80] [180 180 180])
              ))
 
+;; :type :panel
+(defmethod draw-element :panel [_]
+  ;nothing for now
+  )
+
 ;; called by render-ui, takes collection of elements to draw
 (defn draw-group [coll focused-elem]
   (doseq [x coll]
     (draw-element (assoc x :focused? (= x focused-elem)))
+    (when-let [sub-coll (:elements x)]
+      (draw-group sub-coll focused-elem))
     ))
 
 ;; called from main, takes UI db

@@ -21,18 +21,23 @@
 (defonce control-ch (chan (dropping-buffer 3)))
 
 ;; ui components, named by keyword
+;;  TODO later: figure out a clean way to send data so you can break ui
+;;    out into a separate lib
 (declare set-option! new-game! about! char-menu! db)
+;; a component is a vector of maps
+;;    a compoment can contain a component in an :elements key
 (def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(char-menu!)}
                                  {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
                     ;; elements send data as functions (called by rendering fn)
-                    :char-menu [{:id :label :pos 0 :type :button :txt "Choose One"}
-                                {:id :opt1 :pos 1 :type :checkbox :txt "Speed"
-                                 :data #(get-in @db [:options :speed])
-                                 :effect #(set-option! :speed true :vision false)}
-                                {:id :opt2 :pos 2 :type :checkbox :txt "Vision"
-                                 :data #(get-in @db [:options :vision])
-                                 :effect #(set-option! :speed false :vision true)}
-                                {:id :ok :pos 3 :type :button :txt " [  OK  ]" :effect #(new-game!)}]
+                    :char-menu [{:id :char-menu :type :panel
+                                 :elements [{:id :label :pos 0 :type :button :txt "Choose One"}
+                                            {:id :opt1 :pos 1 :type :checkbox :txt "Speed"
+                                             :data #(get-in @db [:options :speed])
+                                             :effect #(set-option! :speed true :vision false)}
+                                            {:id :opt2 :pos 2 :type :checkbox :txt "Vision"
+                                             :data #(get-in @db [:options :vision])
+                                             :effect #(set-option! :speed false :vision true)}
+                                            {:id :ok :pos 3 :type :button :txt " [  OK  ]" :effect #(new-game!)}]}]
                     ;; game-screen component contains a fn that queries world-state
                     :game-screen [{:id :world-map :type :grid :data #(deref (:world-state @db))}]})
 
@@ -64,19 +69,21 @@
   nil)
 
 (defn char-menu! []
-  (swap! db assoc :focused [:char-menu 0] :background [])
+  (swap! db assoc :focused [:char-menu 0 :elements 0] :background [])
   (put! control-ch true))
 
 ;; ui controls
 (defn move-focus! [i]
-  (let [{ui-comps :ui-components [comp-key idx] :focused} @db
-        n (count (get ui-comps comp-key))
+  (let [{ui-comps :ui-components key-coll :focused} @db
+        comp-key (butlast key-coll)
+        idx (last key-coll)
+        n (count (get-in ui-comps comp-key))
         x (+ i idx)]
     (swap! db assoc :focused
-           (cond
-             (< x 0) [comp-key (+ x n)]
-             (>= x n) [comp-key (- x n)]
-             :else [comp-key x]))
+           (conj (vec comp-key) (cond
+                                  (< x 0) (+ x n)
+                                  (>= x n) (- x n)
+                                  :else x)))
     ;; ok to proceed
     (put! control-ch true)))
 
