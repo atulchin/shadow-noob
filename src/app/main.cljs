@@ -27,7 +27,7 @@
 (def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(char-menu!)}
                                  {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
                     :esc-menu [{:id :restart :pos 0 :type :button :txt "Restart" :effect #(restart!)}
-                                 {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
+                               {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
                     ;; elements send data as functions (called by rendering fn)
                     :char-menu [{:id :char-menu :type :panel
                                  :elements [{:id :label :pos 0 :type :button :txt "Choose One"}
@@ -41,8 +41,7 @@
                     ;; game-screen component contains a fn that queries world-state
                     :game-screen [{:id :world-map :type :grid :data #(deref (:world-state @db))}]
                     :msg-panel [{:id :msg-pan :type :time-log :pos [40 1]
-                                 :data #(deref db)}]
-                    })
+                                 :data #(deref db)}]})
 
 ;; db should contain all info needed for generating the interface
 (defonce db (atom {:ui-components ui-components
@@ -94,15 +93,13 @@
            (conj (vec comp-key) (cond
                                   (< x 0) (+ x n)
                                   (>= x n) (- x n)
-                                  :else x)))
-    ))
+                                  :else x)))))
 
 (defn click! []
   (let [{ui-comps :ui-components key-vec :focused} @db
         comp (get-in ui-comps key-vec)]
     (when-let [f (:effect comp)]
-      (f)
-      )))
+      (f))))
 
 
 ;; translates javascript keyboard event to input code
@@ -139,52 +136,74 @@
                     [13] #(click!)
                     [32] #(click!)})
 
+;;take-turn returns a channel containing result
+;; multi-method dispatch based on :type key
+(defmulti take-turn #(:type %))
+
+;;called by take-turn :local-player
+;; using take! + recursion to avoid having a nested go-loop
+;; (is this necessary?)
+(defn wait-for-control [out]
+  ;;player result = fn taken from control-chan
+  (a/take! control-chan (fn [f]
+                          (if-let [result (f)]
+                            ;;put result on provided channel
+                            (put! out result)
+                            ;;nil result means f did not consume a turn
+                            ;;  take from control-chan again
+                            (wait-for-control out)
+                            ))))
+
+;; re-draw the screen at start of player's turn
+(defmethod take-turn :local-player [_]
+  (render-ui @db)
+  (let [out (chan)]
+    ;;this fn will put something on out chan
+    (wait-for-control out)
+    out))
+
+;;npc result = fn contained in :action key
+(defmethod take-turn :npc [e]
+  (let [out (chan)
+        result ((:action e))]
+    (if result
+      ;; put result on out channel and return it
+      (do
+        (put! out result)
+        out)
+      ;; if result is nil, entity did something that did not consume its turn
+      (recur e))))
+
+
 ;; turn-loop spawns a looping process that allocates game turns
-;; called from new-game!
 ;;   make sure it's stopped before being called again
-(defn turn-loop []
+(defn turn-loop [scheduler out]
+  (go-loop []
+    ;; get the entity based on next key in scheduler
+    (let [entity (get-in @world-state [:entities (.next scheduler)])
+          ;;park the loop here until <! take-turn sends a result
+          result (<! (take-turn entity))
+          ;; send time-stamped result to game-rules!
+          ;; returns true if game should continue
+          continue? (game-rules! (assoc result :time (.getTime scheduler)))]
+      ;; set action duration in scheduler
+      ;; TODO: world should determine all durations
+      (.setDuration scheduler (or (:dt result) 10))
+      ;; pass result to output channel
+      (>! out result)
+      ;; continue or exit loop
+      (when continue? (recur))
+      )))
+
+;; creates a scheduler and adds initial entities, then calls turn-loop
+(defn init-turn-loop []
   (let [out (chan)
         scheduler (rot/Scheduler.Action.)]
-    ;; add initial entities to scheduler
     (doseq [k (keys (:entities @world-state))] (.add scheduler k true))
-
-    ;;get next key in schduler
-    ;;  also keep track of whether to re-draw the screen
-    (go-loop [entity-key (.next scheduler)
-              re-render true]
-      ;; get the entity based on key from scheduler
-      ;;   the scheduler should never be empty
-      ;;   but if it is, this loop will gracelessly terminate
-      (when-let [entity (get-in @world-state [:entities entity-key])]
-        ;; could put this in separate functions, but then waiting
-        ;;    for control-chan would have to run in a nested go loop
-        (let [result (case (:type entity)
-                       ;;player result = fn taken from control-chan
-                       ;; also re-draw the screen at start of player's turn
-                       :local-player (do (when re-render (render-ui @db))
-                                         ;; <! control-chan will park until a command arrives
-                                         ((<! control-chan)))
-                       ;;npc result = fn contained in :action key
-                       :npc ((:action entity))
-                       ;;default value
-                       {})]
-          ;; if result is nil, entity did something that did not consume its turn
-          (if (nil? result)
-            (recur entity-key false)
-            ;; otherwise process the result
-            (do
-              ;; set action duration in scheduler
-              ;; TODO: world should determine all durations
-              (.setDuration scheduler (or (:dt result) 10))
-              ;; pass result to output channel
-              (>! out result)
-              ;; send time-stamped result to game-rules!
-              ;; returns true if game should continue
-              (when (game-rules! (assoc result :time (.getTime scheduler))) 
-                (recur (.next scheduler) true))
-              )))))
-    ;;fn returns output channel
-    out))
+    (turn-loop scheduler out)
+    ;; monitor turn-loop's output channel
+    (go (while true (println (<! out))))
+    ))
 
 (defn new-game! []
   ;;transfer control to game screen
@@ -198,11 +217,7 @@
   ;;display has already been init'ed, just reset defaults
   (draw/reset-defaults)
   ;;start the game
-  (let [debug-ch (turn-loop)]
-    ;; monitor turn-loop's output channel
-    (go (while true (println (<! debug-ch))))
-    ))
-
+  (init-turn-loop))
 
 
 ;; put game rule logic in this fn for now
