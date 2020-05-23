@@ -207,7 +207,7 @@
     (loop [[{:keys [msg time]} & r] data-vec
            p pos]
       (let [rel-time (- time current-time)
-            b (* 255 (Math/pow 1.02 rel-time))]
+            b (* 255 (Math/pow 1.03 rel-time))]
         (draw-text ctx msg (mapv * TILE-DIMS p) [b b b]))
       (when (seq r) (recur r (mapv + [0 1] p)))
       )))

@@ -47,6 +47,9 @@
                    :dims [60 40]
                    :options {} :log [] :time 0}))
 
+(def new-game-state {:keychan key-chan :time 0 :log []
+                     :focused [:game-screen 0] :background [] :foreground [:msg-panel]})
+
 ;; ui functions mutate the db
 (defn set-option! [& opts]
   (swap! db update :options #(apply assoc % opts)))
@@ -147,43 +150,6 @@
       (render-ui @db)
       (recur))))
 
-;; from the point of view of the world model, player and npcs are just game entities
-;; but the user interface needs to handle them differently
-;; use multi-method dispatch for this, based on a ":type" key
-;;   methods for specific values of :type are defined below
-(defmulti take-turn #(:type %))
-
-;; this method is called on the player's turn & waits for keyboard input
-;; go-loop spawns a process that will eventually put something on out channel
-;; (<! key-chan) will park until another fn puts something on key-chan
-;; immediately returns out channel
-(defmethod take-turn :local-player [_]
-  ;;re-render ui (including game map) at start of player's turn
-  (render-ui @db)
-  (let [out (chan)]
-    (go-loop []
-      ;;wait for a code from key-chan
-      (let [code (<! key-chan)
-            ;;fn's called by handle-input return a result if player made a move
-            result (handle-input code)]
-        (if result
-          ;;if there's a result, send it to out channel and exit loop
-          (>! out result)
-          ;;else, continue the go-loop
-          (recur))))
-    out))
-
-;; this method is called on an npc's turn & calls a fn defined in the world state
-;; an entity is a hashmap
-;;   contains :id key for looking itself up in world-state
-(defmethod take-turn :npc [entity]
-  (let [out (chan)]
-    (go
-      (let [entity-fn (:action entity)
-            result (entity-fn)]
-        (>! out result)))
-    out))
-
 ;; turn-loop spawns a looping process that allocates game turns
 ;; called from new-game!
 ;;   make sure it's stopped before being called again
@@ -193,42 +159,56 @@
     ;; add initial entities to scheduler
     (doseq [k (keys (:entities @world-state))] (.add scheduler k true))
 
-    ;;start process
-    ;;currently the only comm. to this process is channels returned by take-turn
-    ;;keep track of game time
-    (go-loop [t 0]
-      ;; get the entity based on next entity-key in scheduler
+    ;;get next key in schduler
+    ;;  also keep track of whether to re-draw the screen
+    (go-loop [entity-key (.next scheduler)
+              re-render true]
+      ;; get the entity based on key from scheduler
       ;;   the scheduler should never be empty
       ;;   but if it is, this loop will gracelessly terminate
-      (when-let [entity (get-in @world-state [:entities (.next scheduler)])]
-        ;; (take-turn) will change the world state, puts result on a channel
-        ;; <! (take-turn) will park until something is put on that channel
-        (let [result (<! (take-turn entity))
-              ;; apply game rules based on the result
-              ;;   also determines whether to continue the game
-              continue? (game-rules! result)
-              ;; get elapsed time from result (or default duration)
-              ;;   TODO: world should track all action durations
-              dt (or (:dt result) 10)
-              t' (+ t dt)]
-          ;; set action duration in scheduler
-          (.setDuration scheduler dt)
-          ;; log the result
-          ;;  TODO move this to game rules?
-          (swap! db #(-> %
-                         (update :log conj {:msg (dissoc result :dt) :time t'})
-                         (assoc :time t')))
-          ;;pass result to output channel
-          (>! out result)
-          ;;continue the process if game rules say to continue
-          (when continue? (recur t'))
-          )))
+      (when-let [entity (get-in @world-state [:entities entity-key])]
+        ;; could put this in separate functions, but then waiting
+        ;;    for keyboard input would have to run in a nested go loop
+        (let [result (case (:type entity)
+                       ;;player result = fn called by handle-input
+                       ;; also re-draw the screen at start of player's turn
+                       :local-player (do (when re-render (render-ui @db))
+                                         ;; <! key-chan will park waiting for key input
+                                         (handle-input (<! key-chan)))
+                       ;;npc result = fn contained in :action key
+                       :npc ((:action entity))
+                       ;;default value
+                       {})]
+          ;; if result is nil, entity did something that did not consume its turn
+          (if (nil? result)
+            (recur entity-key false)
+            ;; otherwise process the result
+            ;;   apply game rules based on the result
+            ;;   also determines whether to continue the game
+            (let [continue? (game-rules! result)
+                  ;; get elapsed time from result (or default duration)
+                  ;;   TODO: world should track all action durations
+                  dt (or (:dt result) 10)
+                  ;t' (+ t dt)
+                  t' (.getTime scheduler)]
+              ;; set action duration in scheduler
+              (.setDuration scheduler dt)
+              ;; log the result
+              ;;  TODO move this to game rules?
+              (swap! db #(-> %
+                             (update :log conj {:msg #_(dissoc result :dt) (assoc result :time t') :time t'})
+                             (assoc :time t')))
+              ;;pass result to output channel
+              (>! out result)
+              ;; continue with next entity in scheduler
+              (when continue? (recur (.next scheduler) true))
+              )))))
     ;;return output channel
     out))
 
 (defn new-game! []
   ;;transfer control to game screen
-  (swap! db assoc :keychan key-chan :log [] :focused [:game-screen 0] :background [] :foreground [:msg-panel])
+  (swap! db merge new-game-state)
   ;;(re)set world state
   (world/reset-state)
   ;;apply options set through UI
