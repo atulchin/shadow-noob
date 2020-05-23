@@ -1,6 +1,6 @@
 
 (ns app.drawcanvas
-  (:require [clojure.core.async :as a :refer [>! <! put! go go-loop chan]]))
+  (:require [clojure.core.async :as a :refer [put! chan]]))
 
 ;; just functions for drawing to the display
 

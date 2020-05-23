@@ -14,11 +14,6 @@
 (defonce key-chan (chan (dropping-buffer 5)))
 ;;  dialog-chan is read by ui dialogs/menus
 (defonce dialog-chan (chan (dropping-buffer 5)))
-;; control-ch to ensure that rendering does not happen until the 
-;;   effects of ui inputs are processed (e.g., loading graphics)
-;;   TODO: this is a bit clunky, maybe there's a better way
-;;     to accomplish the same thing
-(defonce control-ch (chan (dropping-buffer 3)))
 
 ;; ui components, named by keyword
 ;;  TODO later: figure out a clean way to send data so you can break ui
@@ -54,13 +49,10 @@
 
 ;; ui functions mutate the db
 (defn set-option! [& opts]
-  (swap! db update :options #(apply assoc % opts))
-  (put! control-ch true))
+  (swap! db update :options #(apply assoc % opts)))
 
 (defn about! []
-  (println "about")
-  ;; ok to proceed
-  (put! control-ch true))
+  (println "about"))
 
 (defn menu! []
   ;; transfer control to menu
@@ -71,8 +63,15 @@
   nil)
 
 (defn char-menu! []
-  (swap! db assoc :focused [:char-menu 0 :elements 0] :background [])
-  (put! control-ch true))
+  (swap! db assoc :focused [:char-menu 0 :elements 0] :background []))
+
+(defn quit! []
+  ;; transfer control to menu
+  (swap! db assoc :keychan dialog-chan :focused [:start-menu 0] :background [:game-screen])
+  ;; force re-render to make menu appear
+  (render-ui @db)
+  ;;returns a result that stops the turn loop
+  {:end-game true})
 
 ;; ui controls
 (defn move-focus! [i]
@@ -86,18 +85,14 @@
                                   (< x 0) (+ x n)
                                   (>= x n) (- x n)
                                   :else x)))
-    ;; ok to proceed
-    (put! control-ch true)))
+    ))
 
 (defn click! []
   (let [{ui-comps :ui-components key-vec :focused} @db
         comp (get-in ui-comps key-vec)]
-    (if-let [f (:effect comp)]
-      ;; the effect must send a result to control channel
+    (when-let [f (:effect comp)]
       (f)
-      ;; else, comp has no effect, ok to proceed
-      (put! control-ch true))))
-
+      )))
 
 
 ;; translates javascript keyboard event to input code
@@ -124,7 +119,8 @@
              [:shift 40] #(move-player! 5)
              [13] #(open-box!)
              [32] #(open-box!)
-             [27] #(menu!)})
+             [27] #(menu!)
+             [:shift 81] #(quit!)})
 
 ;;maps input codes to functions for dialogs/menus
 (def dialog-keymap {[37] #(move-focus! -1)
@@ -136,25 +132,20 @@
 
 ;;called on player's turn to process game-screen input
 (defn handle-input [code]
+  ;(println code)
   (when-let [f (get keymap code)]
     (f)))
 
-;;called by dialog-loop
-(defn dialog-input [code]
-  (if-let [f (get dialog-keymap code)]
-    (f)
-    ;; key does nothing, ok to proceed
-    (put! control-ch true)))
-
 ;;spawns a process that listens for keyboard codes sent to dialog-chan
+;;called only once, in main!
 (defn dialog-loop []
   (go-loop []
-    (let [code (<! dialog-chan)]
-      (dialog-input code)
+    (let [code (<! dialog-chan)
+          f (get dialog-keymap code)]
+      (when f (f))
       ;;render new ui state after every dialog input
-      (when (<! control-ch) (render-ui @db))
+      (render-ui @db)
       (recur))))
-
 
 ;; from the point of view of the world model, player and npcs are just game entities
 ;; but the user interface needs to handle them differently
@@ -194,60 +185,46 @@
     out))
 
 ;; turn-loop spawns a looping process that allocates game turns
-;; 
-;; scheduler is only modified during the turn loop? doesn't need
-;;   to be accessible from outside
-(defn turn-loop [scheduler ch]
-  ;;track time
-  (go-loop [t 0]
-    ;; get the next entity key from the scheduler      
-    (let [entity-key (.next scheduler)
-          ;;note: this is a snapshot of the entity
-          entity (get-in @world-state [:entities entity-key])
-          ;; (take-turn) will change the world state, puts result on a channel
-          ;; <! (take-turn) will park until something is put on that channel
-          result (when entity (<! (take-turn entity)))
-          ;; get elapsed time from result (or default duration)
-          ;;   TODO: world should track all action durations
-          dt (when result (or (:dt result) 10))
-          t' (+ t dt)]
-      (when result
-        ;; apply game rules based on the result
-        (game-rules! result)
-        ;; set action duration in scheduler
-        (.setDuration scheduler dt)
-        ;; log the result
-        ;;  TODO move this to game rules?
-        (swap! db #(-> %
-                       (update :log conj {:msg (dissoc result :dt) :time t'})
-                       (assoc :time t')))
-        ;; instead of redrawing changes caused by the entity's turn 
-        ;;    here (could be lots), just redraw everything at start
-        ;;    of player's turn
-        ;;pass result to output channel
-        (>! ch result))
+;; called from new-game!
+;;   make sure it's stopped before being called again
+(defn turn-loop []
+  (let [out (chan)
+        scheduler (rot/Scheduler.Action.)]
+    ;; add initial entities to scheduler
+    (doseq [k (keys (:entities @world-state))] (.add scheduler k true))
 
-      (recur t'))))
-
-;; creates and populates a rot-js scheduler
-;;   passes it to turn-loop
-(defn start-turn-loop []
-  (let [debug-ch (chan)
-        scheduler (rot/Scheduler.Action.)
-        state @world-state]
-    ;;must add entity keys to the scheduler, not the entities themselves
-    ;;-- clj data structures are immutable; entities added would just be snapshots
-    (doseq [k (keys (:entities state))]
-      (.add scheduler k true))
-    (turn-loop scheduler debug-ch)
-    ;;start a process to montior the output channel
-    (go (while true (println (<! debug-ch))))))
-
-
-;; TODO : need a way to stop the turn loop
-;;  (maybe shouldn't write "loop" fn's)
-;;  need a way to add entities to scheduler
-;;  
+    ;;start process
+    ;;currently the only comm. to this process is channels returned by take-turn
+    ;;keep track of game time
+    (go-loop [t 0]
+      ;; get the entity based on next entity-key in scheduler
+      ;;   the scheduler should never be empty
+      ;;   but if it is, this loop will gracelessly terminate
+      (when-let [entity (get-in @world-state [:entities (.next scheduler)])]
+        ;; (take-turn) will change the world state, puts result on a channel
+        ;; <! (take-turn) will park until something is put on that channel
+        (let [result (<! (take-turn entity))
+              ;; apply game rules based on the result
+              ;;   also determines whether to continue the game
+              continue? (game-rules! result)
+              ;; get elapsed time from result (or default duration)
+              ;;   TODO: world should track all action durations
+              dt (or (:dt result) 10)
+              t' (+ t dt)]
+          ;; set action duration in scheduler
+          (.setDuration scheduler dt)
+          ;; log the result
+          ;;  TODO move this to game rules?
+          (swap! db #(-> %
+                         (update :log conj {:msg (dissoc result :dt) :time t'})
+                         (assoc :time t')))
+          ;;pass result to output channel
+          (>! out result)
+          ;;continue the process if game rules say to continue
+          (when continue? (recur t'))
+          )))
+    ;;return output channel
+    out))
 
 (defn new-game! []
   ;;transfer control to game screen
@@ -261,32 +238,29 @@
   ;;display has already been init'ed, just reset defaults
   (draw/reset-defaults)
   ;;start the game
-  (start-turn-loop)
-  ;; ok to render
-  (put! control-ch true))
-
-(defn init-interface []
-  (. js/document addEventListener "keydown" key-event)
-  (dialog-loop)
-  (go
-    (when (<! (init-disp! (:dims @db)))
-      (render-ui @db))))
-
-(defn refresh-interface []
-  (render-ui @db))
+  (let [debug-ch (turn-loop)]
+    ;; monitor turn-loop's output channel
+    (go (while true (println (<! debug-ch))))
+    ))
 
 
 
 ;; put game rule logic in this fn for now
+;;  returns true if game continues
 (defn game-rules! [result]
   (cond
     (:ananas result) (do
                        (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
-                       (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :ananas]))))
+                       (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :ananas])))
+                       true)
     (= 0 (:path-length result)) (do
                                   (js/alert "Pedro has caught you!\n\nYOU ARE THE NEW PEDRO!")
                                   (swap! draw/context #(assoc-in % [:icons :player] (get-in % [:icons :pedro])))
-                                  (swap! world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip})))))
+                                  (swap! world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip}))
+                                  true)
+    (:end-game result) false
+    :else true
+    ))
 
 
 ;; put game option logic in this fn for now
@@ -300,9 +274,13 @@
 
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
-  (init-interface))
+  (. js/document addEventListener "keydown" key-event)
+  (dialog-loop)
+  (go
+    (when (<! (init-disp! (:dims @db)))
+      (render-ui @db))))
 
 ;; hot reload; called by shadow-cljs when code is saved
 ;;   object state is preserved
 (defn reload! []
-  (refresh-interface))
+  (render-ui @db))
