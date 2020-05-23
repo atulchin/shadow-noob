@@ -197,7 +197,7 @@
        (update-vis!))
       ;;return move info
       {:move new-coords
-       :time (if (get #{1 3 5 7} d) (get-in s [:entities :player :diag-time]) 10)}
+       :dt (if (get #{1 3 5 7} d) (get-in s [:entities :player :diag-time]) 10)}
       )))
 
 ;; if the player is on a closed box, open it and check for ananas

@@ -177,24 +177,40 @@
 ;; :type :button draws a text button
 ;;   element's :data key contains a function
 (defmethod draw-element :button [{:keys [txt pos focused?]}]
-  (draw-text (:ctx @context)
-             txt
-             (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
-             (if focused? [255 255 80] [180 180 180])))
+  (let [ctx (:ctx @context)]
+    (set! (. ctx -font) "24px monospace")
+    (draw-text ctx txt
+               (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
+               (if focused? [255 255 80] [180 180 180]))
+    ))
 
 ;; :type :checkbox
 ;;   element's :data key contains a function
 (defmethod draw-element :checkbox [{:keys [txt pos focused? data] :or {data (fn [_] nil)}}]
-  (draw-text (:ctx @context) 
-             (str (if (data) "[*] " "[ ] ") txt) 
-             (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
-             (if focused? [255 255 80] [180 180 180])
-             ))
+  (let [ctx (:ctx @context)]
+    (set! (. ctx -font) "24px monospace")
+    (draw-text ctx (str (if (data) "[*] " "[ ] ") txt)
+               (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
+               (if focused? [255 255 80] [180 180 180]))
+    ))
 
-;; :type :panel
-(defmethod draw-element :panel [_]
-  ;nothing for now
+(defmethod draw-element :panel [{:keys [pos]}]
+  ;;draw a box
   )
+
+;; :type :time-log
+(defmethod draw-element :time-log [{:keys [pos data] :or {data (fn [_] nil)}}]
+  (let [ctx (:ctx @context)
+        {logv :log current-time :time} (data)
+        data-vec (subvec logv (max 0 (- (count logv) 5)))]
+    (set! (. ctx -font) "16px monospace")
+    (loop [[{:keys [msg time]} & r] data-vec
+           p pos]
+      (let [rel-time (- time current-time)
+            b (* 255 (Math/pow 1.02 rel-time))]
+        (draw-text ctx msg (mapv * TILE-DIMS p) [b b b]))
+      (when (seq r) (recur r (mapv + [0 1] p)))
+      )))
 
 ;; called by render-ui, takes collection of elements to draw
 (defn draw-group [coll focused-elem]
@@ -205,14 +221,15 @@
     ))
 
 ;; called from main, takes UI db
-(defn render-ui [{:keys [ui-components background focused]}]
+(defn render-ui [{:keys [ui-components background focused foreground]}]
   (clear-canvas @context)
   (let [[fg-key _] focused]
     ;;do background comps first
-    (doseq [k background]
-      ;;iterate through items within the component (no item is focused here)
-      (draw-group (get ui-components k) nil))
+    ;;  iterate through items within the component (no item is focused here)
+    (doseq [k background] (draw-group (get ui-components k) nil))
     ;;render the focused comp on top; focused sub-element may be drawn differently
     (draw-group (get ui-components fg-key) (get-in ui-components focused))
+    ;;overlay foreground comps
+    (doseq [k foreground] (draw-group (get ui-components k) nil))
     ))
 

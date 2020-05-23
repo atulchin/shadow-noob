@@ -39,16 +39,18 @@
                                              :effect #(set-option! :speed false :vision true)}
                                             {:id :ok :pos 3 :type :button :txt " [  OK  ]" :effect #(new-game!)}]}]
                     ;; game-screen component contains a fn that queries world-state
-                    :game-screen [{:id :world-map :type :grid :data #(deref (:world-state @db))}]})
+                    :game-screen [{:id :world-map :type :grid :data #(deref (:world-state @db))}]
+                    :msg-panel [{:id :msg-pan :type :time-log :pos [40 1]
+                                 :data #(deref db)}]
+                    })
 
 ;; db should contain all info needed for generating the interface
 (defonce db (atom {:ui-components ui-components
                    :world-state world-state
                    :keychan dialog-chan
-                   :focused [:start-menu 0]
-                   :background []
+                   :focused [:start-menu 0] :background [] :foreground []
                    :dims [60 40]
-                   :options {}}))
+                   :options {} :log [] :time 0}))
 
 ;; ui functions mutate the db
 (defn set-option! [& opts]
@@ -192,33 +194,40 @@
     out))
 
 ;; turn-loop spawns a looping process that allocates game turns
+;; 
+;; scheduler is only modified during the turn loop? doesn't need
+;;   to be accessible from outside
 (defn turn-loop [scheduler ch]
-  ;; get the next entity key from the scheduler
-  (go-loop []
-          ;;save a snapshot of the world state
+  ;;track time
+  (go-loop [t 0]
+    ;; get the next entity key from the scheduler      
     (let [entity-key (.next scheduler)
-          state @world-state
-          ;;save a snapshot of the entity
-          entity (get-in state [:entities entity-key])
+          ;;note: this is a snapshot of the entity
+          entity (get-in @world-state [:entities entity-key])
           ;; (take-turn) will change the world state, puts result on a channel
           ;; <! (take-turn) will park until something is put on that channel
-          result (if entity
-                   (<! (take-turn entity))
-                   {entity-key false})]
-      ;; apply game rules based on the result or the world-state
-      (game-rules! result)
+          result (when entity (<! (take-turn entity)))
+          ;; get elapsed time from result (or default duration)
+          ;;   TODO: world should track all action durations
+          dt (when result (or (:dt result) 10))
+          t' (+ t dt)]
+      (when result
+        ;; apply game rules based on the result
+        (game-rules! result)
+        ;; set action duration in scheduler
+        (.setDuration scheduler dt)
+        ;; log the result
+        ;;  TODO move this to game rules?
+        (swap! db #(-> %
+                       (update :log conj {:msg (dissoc result :dt) :time t'})
+                       (assoc :time t')))
+        ;; instead of redrawing changes caused by the entity's turn 
+        ;;    here (could be lots), just redraw everything at start
+        ;;    of player's turn
+        ;;pass result to output channel
+        (>! ch result))
 
-      ;; if result includes :time, set action duration in scheduler
-      ;;   otherwise default duration
-      (.setDuration scheduler (or (:time result) 10))
-
-      ;; instead of redrawing changes caused by the entity's turn 
-      ;;    here (could be lots), just redraw everything at start
-      ;;    of player's turn
-
-      ;;pass result to output channel
-      (>! ch result))
-    (recur)))
+      (recur t'))))
 
 ;; creates and populates a rot-js scheduler
 ;;   passes it to turn-loop
@@ -234,9 +243,15 @@
     ;;start a process to montior the output channel
     (go (while true (println (<! debug-ch))))))
 
+
+;; TODO : need a way to stop the turn loop
+;;  (maybe shouldn't write "loop" fn's)
+;;  need a way to add entities to scheduler
+;;  
+
 (defn new-game! []
   ;;transfer control to game screen
-  (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background [])
+  (swap! db assoc :keychan key-chan :log [] :focused [:game-screen 0] :background [] :foreground [:msg-panel])
   ;;(re)set world state
   (world/reset-state)
   ;;apply options set through UI
@@ -285,8 +300,7 @@
 
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
-  (init-interface)
-  )
+  (init-interface))
 
 ;; hot reload; called by shadow-cljs when code is saved
 ;;   object state is preserved
