@@ -14,14 +14,19 @@
 (defonce key-chan (chan (dropping-buffer 5)))
 ;;  dialog-chan is read by ui dialogs/menus
 (defonce dialog-chan (chan (dropping-buffer 5)))
+;;  control-chan is read during player's turn
+;;    other processes should send functions to it
+(defonce control-chan (chan (dropping-buffer 5)))
 
 ;; ui components, named by keyword
 ;;  TODO later: figure out a clean way to send data so you can break ui
 ;;    out into a separate lib
-(declare set-option! new-game! about! char-menu! db)
+(declare set-option! new-game! about! char-menu! restart! db)
 ;; a component is a vector of maps
 ;;    a compoment can contain a component in an :elements key
 (def ui-components {:start-menu [{:id :new-game :pos 0 :type :button :txt "New game" :effect #(char-menu!)}
+                                 {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
+                    :esc-menu [{:id :restart :pos 0 :type :button :txt "Restart" :effect #(restart!)}
                                  {:id :about :pos 1 :type :button :txt "About" :effect #(about!)}]
                     ;; elements send data as functions (called by rendering fn)
                     :char-menu [{:id :char-menu :type :panel
@@ -59,7 +64,7 @@
 
 (defn menu! []
   ;; transfer control to menu
-  (swap! db assoc :keychan dialog-chan :focused [:start-menu 0] :background [:game-screen])
+  (swap! db assoc :keychan dialog-chan :focused [:esc-menu 0] :background [:game-screen])
   ;; force re-render to make menu appear
   (render-ui @db)
   ;; opening the menu isn't really an action, so return nil
@@ -68,13 +73,15 @@
 (defn char-menu! []
   (swap! db assoc :focused [:char-menu 0 :elements 0] :background []))
 
-(defn quit! []
-  ;; transfer control to menu
-  (swap! db assoc :keychan dialog-chan :focused [:start-menu 0] :background [:game-screen])
-  ;; force re-render to make menu appear
-  (render-ui @db)
-  ;;returns a result that stops the turn loop
+;; when this fn is sent via channel to turn-loop, returns 
+;;   a result that causes loop to exit
+(defn quit-command []
   {:end-game true})
+
+(defn restart! []
+  (swap! db assoc :focused [:char-menu 0 :elements 3] :background [:game-screen])
+  ;; send quit command to turn-loop
+  (put! control-chan quit-command))
 
 ;; ui controls
 (defn move-focus! [i]
@@ -122,8 +129,7 @@
              [:shift 40] #(move-player! 5)
              [13] #(open-box!)
              [32] #(open-box!)
-             [27] #(menu!)
-             [:shift 81] #(quit!)})
+             [27] #(menu!)})
 
 ;;maps input codes to functions for dialogs/menus
 (def dialog-keymap {[37] #(move-focus! -1)
@@ -132,23 +138,6 @@
                     [40] #(move-focus! 1)
                     [13] #(click!)
                     [32] #(click!)})
-
-;;called on player's turn to process game-screen input
-(defn handle-input [code]
-  ;(println code)
-  (when-let [f (get keymap code)]
-    (f)))
-
-;;spawns a process that listens for keyboard codes sent to dialog-chan
-;;called only once, in main!
-(defn dialog-loop []
-  (go-loop []
-    (let [code (<! dialog-chan)
-          f (get dialog-keymap code)]
-      (when f (f))
-      ;;render new ui state after every dialog input
-      (render-ui @db)
-      (recur))))
 
 ;; turn-loop spawns a looping process that allocates game turns
 ;; called from new-game!
@@ -168,13 +157,13 @@
       ;;   but if it is, this loop will gracelessly terminate
       (when-let [entity (get-in @world-state [:entities entity-key])]
         ;; could put this in separate functions, but then waiting
-        ;;    for keyboard input would have to run in a nested go loop
+        ;;    for control-chan would have to run in a nested go loop
         (let [result (case (:type entity)
-                       ;;player result = fn called by handle-input
+                       ;;player result = fn taken from control-chan
                        ;; also re-draw the screen at start of player's turn
                        :local-player (do (when re-render (render-ui @db))
-                                         ;; <! key-chan will park waiting for key input
-                                         (handle-input (<! key-chan)))
+                                         ;; <! control-chan will park until a command arrives
+                                         ((<! control-chan)))
                        ;;npc result = fn contained in :action key
                        :npc ((:action entity))
                        ;;default value
@@ -183,27 +172,18 @@
           (if (nil? result)
             (recur entity-key false)
             ;; otherwise process the result
-            ;;   apply game rules based on the result
-            ;;   also determines whether to continue the game
-            (let [continue? (game-rules! result)
-                  ;; get elapsed time from result (or default duration)
-                  ;;   TODO: world should track all action durations
-                  dt (or (:dt result) 10)
-                  ;t' (+ t dt)
-                  t' (.getTime scheduler)]
+            (do
               ;; set action duration in scheduler
-              (.setDuration scheduler dt)
-              ;; log the result
-              ;;  TODO move this to game rules?
-              (swap! db #(-> %
-                             (update :log conj {:msg #_(dissoc result :dt) (assoc result :time t') :time t'})
-                             (assoc :time t')))
-              ;;pass result to output channel
+              ;; TODO: world should determine all durations
+              (.setDuration scheduler (or (:dt result) 10))
+              ;; pass result to output channel
               (>! out result)
-              ;; continue with next entity in scheduler
-              (when continue? (recur (.next scheduler) true))
+              ;; send time-stamped result to game-rules!
+              ;; returns true if game should continue
+              (when (game-rules! (assoc result :time (.getTime scheduler))) 
+                (recur (.next scheduler) true))
               )))))
-    ;;return output channel
+    ;;fn returns output channel
     out))
 
 (defn new-game! []
@@ -227,7 +207,11 @@
 
 ;; put game rule logic in this fn for now
 ;;  returns true if game continues
-(defn game-rules! [result]
+(defn game-rules! [{:keys [time] :as result}]
+  ;; log the result
+  (swap! db #(-> %
+                 (update :log conj {:msg result :time time})
+                 (assoc :time time)))
   (cond
     (:ananas result) (do
                        (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
@@ -239,8 +223,7 @@
                                   (swap! world-state assoc-in [:entities :pedro :action] (fn [_] {:pedro :skip}))
                                   true)
     (:end-game result) false
-    :else true
-    ))
+    :else true))
 
 
 ;; put game option logic in this fn for now
@@ -252,10 +235,30 @@
 
 
 
+;;spawns a process that listens for keyboard codes sent to key-chan
+;;  should be called only once, in main!
+(defn key-loop []
+  (go-loop []
+    (when-let [f (get keymap (<! key-chan))]
+      ;;TODO: don't put it directly on control-chan
+      (>! control-chan f))
+    (recur)))
+
+;;spawns a process that listens for keyboard codes sent to dialog-chan
+;;  should be called only once, in main!
+(defn dialog-loop []
+  (go-loop []
+    (when-let [f (get dialog-keymap (<! dialog-chan))]
+      (f)
+      ;;render new ui state after dialog effect
+      (render-ui @db))
+    (recur)))
+
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
   (. js/document addEventListener "keydown" key-event)
   (dialog-loop)
+  (key-loop)
   (go
     (when (<! (init-disp! (:dims @db)))
       (render-ui @db))))
