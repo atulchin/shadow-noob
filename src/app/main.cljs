@@ -56,10 +56,12 @@
 
 ;; ui functions mutate the db
 (defn set-option! [& opts]
-  (swap! db update :options #(apply assoc % opts)))
+  (swap! db update :options #(apply assoc % opts))
+  nil)
 
 (defn about! []
-  (println "about"))
+  (println "about")
+  nil)
 
 (defn menu! []
   ;; transfer control to menu
@@ -70,7 +72,8 @@
   nil)
 
 (defn char-menu! []
-  (swap! db assoc :focused [:char-menu 0 :elements 0] :background []))
+  (swap! db assoc :focused [:char-menu 0 :elements 0] :background [])
+  nil)
 
 ;; when this fn is sent via channel to turn-loop, returns 
 ;;   a result that causes loop to exit
@@ -80,7 +83,8 @@
 (defn restart! []
   (swap! db assoc :focused [:char-menu 0 :elements 3] :background [:game-screen])
   ;; send quit command to turn-loop
-  (put! control-chan quit-command))
+  (put! control-chan quit-command)
+  nil)
 
 ;; ui controls
 (defn move-focus! [i]
@@ -93,13 +97,17 @@
            (conj (vec comp-key) (cond
                                   (< x 0) (+ x n)
                                   (>= x n) (- x n)
-                                  :else x)))))
+                                  :else x))
+           ))
+  nil)
 
 (defn click! []
   (let [{ui-comps :ui-components key-vec :focused} @db
         comp (get-in ui-comps key-vec)]
     (when-let [f (:effect comp)]
-      (f))))
+      (f)
+      ))
+  nil)
 
 
 ;; translates javascript keyboard event to input code
@@ -136,31 +144,33 @@
                     [13] #(click!)
                     [32] #(click!)})
 
+;;"runs" in the background to execute player commands only on player turn
+(defn control-loop [signal-chan fn-chan]
+  (let [out (chan)]
+    ;;wait for signal
+    (go-loop [_ (<! signal-chan)]
+      ;execute commands from fn-chan until non-nil result 
+      (loop []
+        (if-let [result ((<! fn-chan))]
+          (>! out result) (recur)))
+      ;;wait for next signal
+      (recur (<! signal-chan)))
+    out))
+
+;;set up a channel pipeline: player-turn + control-chan => player-result
+(defonce player-turn (chan))
+(defonce player-result (control-loop player-turn control-chan))
+
 ;;take-turn returns a channel containing result
 ;; multi-method dispatch based on :type key
 (defmulti take-turn #(:type %))
 
-;;called by take-turn :local-player
-;; using take! + recursion to avoid having a nested go-loop
-;; (is this necessary?)
-(defn wait-for-control [out]
-  ;;player result = fn taken from control-chan
-  (a/take! control-chan (fn [f]
-                          (if-let [result (f)]
-                            ;;put result on provided channel
-                            (put! out result)
-                            ;;nil result means f did not consume a turn
-                            ;;  take from control-chan again
-                            (wait-for-control out)
-                            ))))
-
 ;; re-draw the screen at start of player's turn
+;; player-result channel will contain a result when control-loop puts one there
 (defmethod take-turn :local-player [_]
   (render-ui @db)
-  (let [out (chan)]
-    ;;this fn will put something on out chan
-    (wait-for-control out)
-    out))
+  (put! player-turn true)
+  player-result)
 
 ;;npc result = fn contained in :action key
 (defmethod take-turn :npc [e]
@@ -174,7 +184,6 @@
       ;; if result is nil, entity did something that did not consume its turn
       (recur e))))
 
-
 ;; turn-loop spawns a looping process that allocates game turns
 ;;   make sure it's stopped before being called again
 (defn turn-loop [scheduler out]
@@ -182,6 +191,7 @@
     ;; get the entity based on next key in scheduler
     (let [entity (get-in @world-state [:entities (.next scheduler)])
           ;;park the loop here until <! take-turn sends a result
+          ;;note: player's take-turn spawns a process that takes from control-chan
           result (<! (take-turn entity))
           ;; send time-stamped result to game-rules!
           ;; returns true if game should continue
@@ -192,7 +202,7 @@
       ;; pass result to output channel
       (>! out result)
       ;; continue or exit loop
-      (when continue? (recur))
+      (if continue? (recur) (println "exit loop"))
       )))
 
 ;; creates a scheduler and adds initial entities, then calls turn-loop
@@ -256,6 +266,7 @@
   (go-loop []
     (when-let [f (get keymap (<! key-chan))]
       ;;TODO: don't put it directly on control-chan
+      ;;write keymap functions that feed ctrl-ch
       (>! control-chan f))
     (recur)))
 
