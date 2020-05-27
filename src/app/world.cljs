@@ -1,8 +1,8 @@
 
 (ns app.world
-    (:require ["rot-js" :as rot]
-              [clojure.set :as set]
-              [app.utils :as utils :refer [assoc-multi update-all sample]]))
+  (:require ["rot-js" :as rot]
+            [clojure.set :as set]
+            [app.utils :as utils :refer [assoc-multi update-all sample]]))
 
 (declare chase! compute-fov update-vis!)
 
@@ -17,17 +17,33 @@
 ;;    -- it is not really an "act" method
 (defonce world-state (atom {}))
 (def init-state {:grid {}
-                        :seen #{}
-                        :visible {}
-                        :entities {:player {:id :player :type :local-player 
-                                            :fov-fn :fov-360 :vision 10 :diag-time 14}
-                                   :pedro {:id :pedro :type :npc 
-                                           :fov-fn :fov-90 :vision 5
-                                           :action #(chase! :pedro :player)}}
-                        })
+                 :seen #{}
+                 :visible {}
+                 :entities {:player {:id :player :type :local-player
+                                     :fov-fn :fov-360 :vision 10
+                                     :move-time 10 :diag 1.4}
+                            :pedro {:id :pedro :type :npc
+                                    :fov-fn :fov-90 :vision 5
+                                    :move-time 10 :diag 2.0
+                                    :action #(chase! :pedro :player 4)}}
+                 :effects #{}})
 
-(defn reset-state []
-  (reset! world-state init-state))
+(defn reset-state [] (reset! world-state init-state))
+
+;; effects that can be applied to entities
+;;  format is [:entity-key updating-fn]
+(def effects {:speed [:move-time #(* % 0.5)]})
+
+;; active effects are listed in state's :effects field
+;;  as [:entity entity-key :effect effect-key :end end-time]
+(defn add-effect [state entity-key effect-key end-time]
+  (update state :effects conj {:entity entity-key :effect effect-key :end end-time}))
+
+;; return entity with effects applied
+(defn get-entity [state key]
+  (let [e-fx (map :effect (set/select #(= (:entity %) key) (:effects state)))]
+    (reduce #(apply update %1 (get effects %2)) (get-in state [:entities key]) e-fx)
+    ))
 
 ;; grid directions are stored in rot-js as a javascript object
 ;;   convert to clj vector
@@ -75,10 +91,9 @@
     ;; compute entities' fov based on starting info
     ;; threading macro (->) uses result of swap! as first arg to next function
     (->
-     (swap! world-state update :entities update-all compute-fov)
+     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
      (get-in [:entities :player :fov])
-     (update-vis!))
-    ))
+     (update-vis!))))
 
 ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
 ;;  this generates and returns that fn
@@ -101,8 +116,7 @@
 ;;   x and y coords, r = distance, v = visibility
 (defn- fov-callback [data-ref]
   (fn [x y r v]
-    (swap! data-ref assoc [x y] v)
-    ))
+    (swap! data-ref assoc [x y] v)))
 
 ;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
 (defonce FOV-P (rot/FOV.PreciseShadowcasting. (light-callback)))
@@ -115,28 +129,23 @@
 (defmulti compute-fov #(:fov-fn %))
 
 ;;fov functions used by entities
-;;  create a tmp mutable ref for callback fn, then returns entity with fov data
-(defmethod compute-fov :fov-360 [{:keys [coords vision] :as entity}]
-  (let [data-ref (atom {})
-        [x y] coords]
+;;  create a tmp mutable ref for callback fn, then return clj data struct
+(defmethod compute-fov :fov-360 [{[x y] :coords vision :vision}]
+  (let [data-ref (atom {})]
     (.compute FOV-P x y vision (fov-callback data-ref))
-    (assoc entity :fov @data-ref)
-    ))
+    @data-ref))
 
-(defmethod compute-fov :fov-90 [{:keys [coords vision delta] :as entity}]
+(defmethod compute-fov :fov-90 [{[x y] :coords vision :vision delta :delta}]
   (let [data-ref (atom {})
-        [x y] coords
         dir (.indexOf dirs delta)]
     (.compute90 FOV-R x y vision dir (fov-callback data-ref))
-    (assoc entity :fov @data-ref)
-    ))
+    @data-ref))
 
 ;;updates world visibility info based on given fov data
 (defn update-vis! [fovmap]
   (swap! world-state #(-> %
                           (assoc :visible fovmap)
-                          (update :seen into (keys fovmap))
-                          )))
+                          (update :seen into (keys fovmap)))))
 
 ;; create a temporary mutable ref for rot-js pathfinder to use
 ;;   then return an ordinary clj vector
@@ -157,24 +166,28 @@
     ;;save the change from previous coordinates
     (let [delta (mapv - next-step (get-in @world-state [:entities entity-key :coords]))]
       ;;update coordinates and coordinate change
-      (swap! world-state update-in [:entities entity-key] 
+      (swap! world-state update-in [:entities entity-key]
              assoc :coords next-step :delta delta)
       ;;update fov using new info
       ;;TODO put this in a general "move" fn
-      (swap! world-state update-in [:entities entity-key] compute-fov)
-      ))
-  {:path-length (count rest-of-path)})
+      (let [e (get-entity @world-state entity-key)]
+        (swap! world-state assoc-in [:entities entity-key :fov] (compute-fov e))
+        ;;return result
+        {:path-length (count rest-of-path)
+         :move next-step
+         :dt (* (:move-time e)
+                (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} delta) (:diag e) 1.0))}))
+    
+    ))
 
 ;; entity behavior: move towards target entity
 ;;   modifies entity coords in world state
 ;;   returns result of follow-path!
-(defn chase! [entity-key target-key]
+(defn chase! [entity-key target-key topology]
   (let [s @world-state
         e-coords (get-in s [:entities entity-key :coords])
-        t-coords (get-in s [:entities target-key :coords])
-        topology 4]
-    (follow-path! entity-key (compute-path e-coords t-coords topology))
-    ))
+        t-coords (get-in s [:entities target-key :coords])]
+    (follow-path! entity-key (compute-path e-coords t-coords topology))))
 
 ;; moves player in a given grid direction
 ;;   updates world state
@@ -191,13 +204,14 @@
       ;;update fov using new info
       ;;and update world visbility based on fov
       ;;TODO put this in a general "move" fn
-      (->
-       (swap! world-state update-in [:entities :player] compute-fov)
-       (get-in [:entities :player :fov])
-       (update-vis!))
-      ;;return move info
-      {:move new-coords
-       :dt (if (get #{1 3 5 7} d) (get-in s [:entities :player :diag-time]) 10)}
+      (let [e (get-entity @world-state :player)
+            fov (compute-fov e)]
+        (swap! world-state assoc-in [:entities :player :fov] fov)
+        (update-vis! fov)
+        ;;return move info
+        {:move new-coords
+         :dt (* (:move-time e)
+                (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} delta) (:diag e) 1.0))})
       )))
 
 ;; if the player is on a closed box, open it and check for ananas

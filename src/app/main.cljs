@@ -155,6 +155,7 @@
           (>! out result) (recur)))
       ;;wait for next signal
       (recur (<! signal-chan)))
+    ;;return output channel
     out))
 
 ;;set up a channel pipeline: player-turn + control-chan => player-result
@@ -172,7 +173,7 @@
   (put! player-turn true)
   player-result)
 
-;;npc result = fn contained in :action key
+;;npc result comes from fn contained in :action key
 (defmethod take-turn :npc [e]
   (let [out (chan)
         result ((:action e))]
@@ -191,7 +192,6 @@
     ;; get the entity based on next key in scheduler
     (let [entity (get-in @world-state [:entities (.next scheduler)])
           ;;park the loop here until <! take-turn sends a result
-          ;;note: player's take-turn spawns a process that takes from control-chan
           result (<! (take-turn entity))
           ;; send time-stamped result to game-rules!
           ;; returns true if game should continue
@@ -256,7 +256,7 @@
   (swap! world-state update-in [:entities :player]
          #(assoc %
                  :fov-fn (if vision :fov-360 :fov-90)
-                 :diag-time (if speed 10 14))))
+                 :diag (if speed 1.0 1.4))))
 
 
 
