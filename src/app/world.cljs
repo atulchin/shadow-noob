@@ -4,7 +4,7 @@
             [clojure.set :as set]
             [app.utils :as utils :refer [assoc-multi update-all sample]]))
 
-(declare chase! compute-fov update-vis!)
+(declare chase! compute-fov update-vis)
 
 ;; just functions for querying and modifying world state
 ;;   probably shouldn't spawn any processes in here
@@ -21,29 +21,60 @@
                  :visible {}
                  :entities {:player {:id :player :type :local-player
                                      :fov-fn :fov-360 :vision 10
-                                     :move-time 10 :diag 1.4}
+                                     :move-time 10 :diag 1.4
+                                     :inv {:potion-speed 1 :scroll-teleport 1}}
                             :pedro {:id :pedro :type :npc
                                     :fov-fn :fov-90 :vision 5
                                     :move-time 10 :diag 2.0
                                     :action #(chase! :pedro :player 4)}}
+                 :time 0
                  :effects #{}})
 
 (defn reset-state [] (reset! world-state init-state))
 
 ;; effects that can be applied to entities
-;;  format is [:entity-key updating-fn]
+;;  format is [:key updating-fn]
 (def effects {:speed [:move-time #(* % 0.5)]})
 
 ;; active effects are listed in state's :effects field
 ;;  as [:entity entity-key :effect effect-key :end end-time]
-(defn add-effect [state entity-key effect-key end-time]
-  (update state :effects conj {:entity entity-key :effect effect-key :end end-time}))
+(defn add-effect [state entity-key effect-key duration]
+  (update state :effects conj 
+          {:entity entity-key :effect effect-key :end (+ (:time state) duration)}))
+
+;; returns state with time t and expired effects removed
+(defn set-time [s t]
+  (merge s {:time t
+            :effects (set/select #(> (:end %) t) (:effects s))}))
 
 ;; return entity with effects applied
-(defn get-entity [state key]
-  (let [e-fx (map :effect (set/select #(= (:entity %) key) (:effects state)))]
-    (reduce #(apply update %1 (get effects %2)) (get-in state [:entities key]) e-fx)
+(defn get-entity [state k]
+  (let [e-fx (map :effect (set/select #(= (:entity %) k) (:effects state)))]
+    (reduce #(apply update %1 (get effects %2)) (get-in state [:entities k]) e-fx)
     ))
+
+;; items
+(defn add-item [state entity-key item-key]
+  (update-in state [:entities entity-key :inv item-key] inc))
+
+(defn remove-item [state entity-key item-key]
+  (let [qty (dec (get-in state [:entities entity-key :inv item-key]))]
+    (if (< qty 1)
+      (update-in state [:entities entity-key :inv] dissoc item-key)
+      (assoc-in state [:entities entity-key :inv item-key] qty)
+      )))
+
+(defn teleport [state entity-key]
+  (assoc-in state [:entities entity-key :coords] (rand-nth (keys (:grid state)))))
+
+;; item values are functions of world-state and entity-key
+(def items {:potion-speed (fn [state k] (-> state
+                                       (add-effect k :speed 100)
+                                       (remove-item k :potion-speed)))
+            :scroll-teleport (fn [state k] (-> state
+                                          (teleport k)
+                                          (remove-item k :scroll-teleport)))
+            })
 
 ;; grid directions are stored in rot-js as a javascript object
 ;;   convert to clj vector
@@ -89,11 +120,9 @@
                         ;;update world state with location of ananas
                             (assoc :ananas (first box-keys))))
     ;; compute entities' fov based on starting info
-    ;; threading macro (->) uses result of swap! as first arg to next function
-    (->
-     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
-     (get-in [:entities :player :fov])
-     (update-vis!))))
+    (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
+    (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
+    ))
 
 ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
 ;;  this generates and returns that fn
@@ -141,11 +170,11 @@
     (.compute90 FOV-R x y vision dir (fov-callback data-ref))
     @data-ref))
 
-;;updates world visibility info based on given fov data
-(defn update-vis! [fovmap]
-  (swap! world-state #(-> %
-                          (assoc :visible fovmap)
-                          (update :seen into (keys fovmap)))))
+;;for updating world visibility info based on given fov data
+(defn update-vis [state fovmap]
+  (-> state
+      (assoc :visible fovmap)
+      (update :seen into (keys fovmap))))
 
 ;; create a temporary mutable ref for rot-js pathfinder to use
 ;;   then return an ordinary clj vector
@@ -206,8 +235,10 @@
       ;;TODO put this in a general "move" fn
       (let [e (get-entity @world-state :player)
             fov (compute-fov e)]
-        (swap! world-state assoc-in [:entities :player :fov] fov)
-        (update-vis! fov)
+        (swap! world-state #(-> %
+                                (assoc-in [:entities :player :fov] fov)
+                                (update-vis fov)
+                                ))
         ;;return move info
         {:move new-coords
          :dt (* (:move-time e)

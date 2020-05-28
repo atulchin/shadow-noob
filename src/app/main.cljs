@@ -49,9 +49,9 @@
                    :keychan dialog-chan
                    :focused [:start-menu 0] :background [] :foreground []
                    :dims [60 40]
-                   :options {} :log [] :time 0}))
+                   :options {} :log []}))
 
-(def new-game-state {:keychan key-chan :time 0 :log []
+(def new-game-state {:keychan key-chan :log []
                      :focused [:game-screen 0] :background [] :foreground [:msg-panel]})
 
 ;; ui functions mutate the db
@@ -234,9 +234,9 @@
 ;;  returns true if game continues
 (defn game-rules! [{:keys [time] :as result}]
   ;; log the result
-  (swap! db #(-> %
-                 (update :log conj {:msg result :time time})
-                 (assoc :time time)))
+  (swap! db update :log conj {:msg result :time time})
+  ;; update world time
+  (swap! world-state world/set-time time)
   (cond
     (:ananas result) (do
                        (js/alert "The box contains a golden pineapple, heavy with promise and juice.\n\nIt shines as you hold it aloft. In the distance, Pedro howls in rage.")
