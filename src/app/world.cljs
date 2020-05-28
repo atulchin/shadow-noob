@@ -22,7 +22,7 @@
                  :entities {:player {:id :player :type :local-player
                                      :fov-fn :fov-360 :vision 10
                                      :move-time 10 :diag 1.4
-                                     :inv {:potion-speed 1 :scroll-teleport 1}}
+                                     :inv {:potion-speed 1 :scroll-teleport 2}}
                             :pedro {:id :pedro :type :npc
                                     :fov-fn :fov-90 :vision 5
                                     :move-time 10 :diag 2.0
@@ -65,7 +65,15 @@
       )))
 
 (defn teleport [state entity-key]
-  (assoc-in state [:entities entity-key :coords] (rand-nth (keys (:grid state)))))
+  (let [s' (assoc-in state [:entities entity-key :coords] (rand-nth (keys (:grid state))))
+        fov (compute-fov (get-entity s' entity-key))
+        player-fov (compute-fov (get-entity s' :player))]
+    (-> s'
+        ;;update entity's fov
+        (assoc-in [:entities entity-key :fov] fov)
+        ;;update player's vision
+        (update-vis player-fov))
+    ))
 
 ;; item values are functions of world-state and entity-key
 (def items {:potion-speed (fn [state k] (-> state
@@ -75,6 +83,15 @@
                                           (teleport k)
                                           (remove-item k :scroll-teleport)))
             })
+
+(defn use-item! [entity-key item-key]
+  (let [f (get items item-key)]
+    (swap! world-state f entity-key))
+  ;;return a result
+  {:item item-key :entity entity-key :dt 10})
+
+(defn player-item! [item-key]
+  (use-item! :player item-key))
 
 ;; grid directions are stored in rot-js as a javascript object
 ;;   convert to clj vector

@@ -201,8 +201,9 @@
 ;; :type :time-log
 (defmethod draw-element :time-log [{:keys [pos data] :or {data (fn [_] nil)}}]
   (let [ctx (:ctx @context)
-        {logv :log current-time :time} (data)
-        data-vec (subvec logv (max 0 (- (count logv) 5)))]
+        {logv :log} (data)
+        data-vec (subvec logv (max 0 (- (count logv) 5)))
+        current-time (:time (peek data-vec))]
     (set! (. ctx -font) "16px monospace")
     (loop [[{:keys [msg time]} & r] data-vec
            p pos]

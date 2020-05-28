@@ -2,7 +2,7 @@
 (ns app.main
   (:require ["rot-js" :as rot]
             [clojure.core.async :as a :refer [>! <! put! go go-loop chan dropping-buffer]]
-            [app.world :as world :refer [world-state move-player! open-box!]]
+            [app.world :as world :refer [world-state move-player! open-box! player-item!]]
             [app.drawcanvas :as draw :refer [init-disp! render-ui]]))
 
 ;; this file is for manipulating the user inteface & interacting w/ game state
@@ -49,10 +49,13 @@
                    :keychan dialog-chan
                    :focused [:start-menu 0] :background [] :foreground []
                    :dims [60 40]
-                   :options {} :log []}))
+                   :options {} :log []
+                   :running false}))
 
-(def new-game-state {:keychan key-chan :log []
-                     :focused [:game-screen 0] :background [] :foreground [:msg-panel]})
+(def new-game-state 
+  {:keychan key-chan :focused [:game-screen 0] :background [] 
+   :foreground [:msg-panel]
+   :log [] :running true})
 
 ;; ui functions mutate the db
 (defn set-option! [& opts]
@@ -81,9 +84,8 @@
   {:end-game true})
 
 (defn restart! []
+  ;; open character menu
   (swap! db assoc :focused [:char-menu 0 :elements 3] :background [:game-screen])
-  ;; send quit command to turn-loop
-  (put! control-chan quit-command)
   nil)
 
 ;; ui controls
@@ -109,6 +111,43 @@
       ))
   nil)
 
+(defn close-menu! []
+  ;; TODO - need to keep track of previous state
+  ;; for now, just give control to game screen
+  (when (:running @db)
+    (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background []))
+  nil)
+
+;; called when an inventory item is clicked
+(defn inv-click! [k]
+  ;; give control back to game screen
+  (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background [])
+  ;; send use-item command to turn loop
+  (put! control-chan #(player-item! k))
+  nil)
+
+;; menu text for items defined in world/items
+(def item-text {:potion-speed "Potion of speed"
+                :scroll-teleport "Scroll of teleport"})
+
+;; generate a menu from an inventory hashmap
+(defn inv-comp [m]
+  (conj (into [{:id :label :pos 0 :type :button :txt "-- Items --"}]
+              (map-indexed (fn [i [k v]]
+                             {:id k :pos (inc i) :type :button :txt (str (item-text k) " x" v) :effect #(inv-click! k)})
+                           m))
+        {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
+
+(defn inventory-menu! []
+  ;;add/update menu in db
+  (swap! db update :ui-components assoc :inv-menu
+         (inv-comp (get-in @world-state [:entities :player :inv])))
+  ;; transfer control to menu
+  (swap! db assoc :keychan dialog-chan :focused [:inv-menu 0] :background [:game-screen])
+  ;; force re-render to make menu appear
+  (render-ui @db)
+  ;; opening the menu isn't really an action, so return nil
+  nil)
 
 ;; translates javascript keyboard event to input code
 ;; puts it on the channel specified in UI database
@@ -134,7 +173,8 @@
              [:shift 40] #(move-player! 5)
              [13] #(open-box!)
              [32] #(open-box!)
-             [27] #(menu!)})
+             [27] #(menu!)
+             [73] #(inventory-menu!)})
 
 ;;maps input codes to functions for dialogs/menus
 (def dialog-keymap {[37] #(move-focus! -1)
@@ -142,7 +182,8 @@
                     [39] #(move-focus! 1)
                     [40] #(move-focus! 1)
                     [13] #(click!)
-                    [32] #(click!)})
+                    [32] #(click!)
+                    [27] #(close-menu!)})
 
 ;;"runs" in the background to execute player commands only on player turn
 (defn control-loop [signal-chan fn-chan]
@@ -216,6 +257,8 @@
     ))
 
 (defn new-game! []
+  ;; if already running, send quit command to turn-loop
+  (when (:running @db) (put! control-chan quit-command))
   ;;transfer control to game screen
   (swap! db merge new-game-state)
   ;;(re)set world state
