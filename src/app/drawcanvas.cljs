@@ -198,6 +198,31 @@
   ;;draw a box
   )
 
+;; :type :cursor
+;; :data fn returns position
+(defmethod draw-element :cursor [{:keys [data]}]
+  (let [ctx (:ctx @context)
+        pos (data)]
+    (set! (. ctx -font) "24px monospace")
+    (draw-rect ctx (mapv * TILE-DIMS pos) TILE-DIMS [255 255 0 0.4])
+    ))
+
+;; :type :target-info
+;; :data fn returns ui database
+(defmethod draw-element :target-info [{:keys [pos data]}]
+  (let [ctx (:ctx @context)
+        ;; get target coords and world state
+        {:keys [target world-state]} (data)
+        s @world-state
+        ;; only show target info if coords are in the :seen list
+        visible-target (get-in s [:seen target])
+        ;; TODO - figure out where text descriptions should live
+        ;; TODO - also search entities for coords
+        txt (get-in s [:grid visible-target])]
+    (set! (. ctx -font) "16px monospace")
+    (draw-text ctx txt (mapv * TILE-DIMS pos) [255 255 255])
+    ))
+
 ;; :type :time-log
 (defmethod draw-element :time-log [{:keys [pos data] :or {data (fn [_] nil)}}]
   (let [ctx (:ctx @context)

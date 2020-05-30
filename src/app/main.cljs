@@ -14,6 +14,8 @@
 (defonce key-chan (chan (dropping-buffer 5)))
 ;;  dialog-chan is read by ui dialogs/menus
 (defonce dialog-chan (chan (dropping-buffer 5)))
+;;  target-chan read by targeting system
+(defonce target-chan (chan (dropping-buffer 5)))
 ;;  control-chan is read during player's turn
 ;;    other processes should send functions to it
 (defonce control-chan (chan (dropping-buffer 5)))
@@ -41,14 +43,17 @@
                     ;; game-screen component contains a fn that queries world-state
                     :game-screen [{:id :world-map :type :grid :data #(deref (:world-state @db))}]
                     :msg-panel [{:id :msg-pan :type :time-log :pos [40 1]
-                                 :data #(deref db)}]})
+                                 :data #(deref db)}]
+                    :target-overlay [{:id :cursor :type :cursor :data #(:target @db)}
+                                     {:id :info :type :target-info :pos [40 38] :data #(deref db)}]
+                    })
 
 ;; db should contain all info needed for generating the interface
 (defonce db (atom {:ui-components ui-components
                    :world-state world-state
                    :keychan dialog-chan
                    :focused [:start-menu 0] :background [] :foreground []
-                   :dims [60 40]
+                   :dims [60 40] :target [0 0]
                    :options {} :log []
                    :running false}))
 
@@ -57,7 +62,11 @@
    :foreground [:msg-panel]
    :log [] :running true})
 
-;; ui functions mutate the db
+;; menu text for items defined in world/items
+(def item-text {:potion-speed "Potion of speed"
+                :scroll-teleport "Scroll of teleport"})
+
+;; ui functions triggered from dialogs/menus; mutate the db
 (defn set-option! [& opts]
   (swap! db update :options #(apply assoc % opts))
   nil)
@@ -66,22 +75,9 @@
   (println "about")
   nil)
 
-(defn menu! []
-  ;; transfer control to menu
-  (swap! db assoc :keychan dialog-chan :focused [:esc-menu 0] :background [:game-screen])
-  ;; force re-render to make menu appear
-  (render-ui @db)
-  ;; opening the menu isn't really an action, so return nil
-  nil)
-
 (defn char-menu! []
   (swap! db assoc :focused [:char-menu 0 :elements 0] :background [])
   nil)
-
-;; when this fn is sent via channel to turn-loop, returns 
-;;   a result that causes loop to exit
-(defn quit-command []
-  {:end-game true})
 
 (defn restart! []
   ;; open character menu
@@ -89,26 +85,42 @@
   nil)
 
 ;; ui controls
-(defn move-focus! [i]
-  (let [{ui-comps :ui-components key-coll :focused} @db
+(defn move-focus [s i]
+  (let [{ui-comps :ui-components key-coll :focused} s
         comp-key (butlast key-coll)
         idx (last key-coll)
         n (count (get-in ui-comps comp-key))
         x (+ i idx)]
-    (swap! db assoc :focused
+    (assoc s :focused
            (conj (vec comp-key) (cond
                                   (< x 0) (+ x n)
                                   (>= x n) (- x n)
                                   :else x))
-           ))
+           )))
+
+(defn move-focus! [i]
+  (swap! db move-focus i)
   nil)
 
+;; executes :effect fn defined in ui element
 (defn click! []
   (let [{ui-comps :ui-components key-vec :focused} @db
         comp (get-in ui-comps key-vec)]
     (when-let [f (:effect comp)]
       (f)
       ))
+  nil)
+
+(defn move-target [s [x y]]
+  (update s :target
+          #(->> %
+                (mapv + [x y])
+                (mapv min (:dims s))
+                (mapv max [0 0])
+                )))
+
+(defn move-target! [[x y]]
+  (swap! db move-target [x y])
   nil)
 
 (defn close-menu! []
@@ -126,10 +138,6 @@
   (put! control-chan #(player-item! k))
   nil)
 
-;; menu text for items defined in world/items
-(def item-text {:potion-speed "Potion of speed"
-                :scroll-teleport "Scroll of teleport"})
-
 ;; generate a menu from an inventory hashmap
 (defn inv-comp [m]
   (conj (into [{:id :label :pos 0 :type :button :txt "-- Items --"}]
@@ -138,6 +146,7 @@
                            m))
         {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
 
+;; ui functions triggered from game screen on player's turn
 (defn inventory-menu! []
   ;;add/update menu in db
   (swap! db update :ui-components assoc :inv-menu
@@ -149,13 +158,32 @@
   ;; opening the menu isn't really an action, so return nil
   nil)
 
+(defn menu! []
+  ;; transfer control to menu
+  (swap! db assoc :keychan dialog-chan :focused [:esc-menu 0] :background [:game-screen])
+  ;; force re-render to make menu appear
+  (render-ui @db)
+  ;; opening the menu isn't really an action, so return nil
+  nil)
+
+(defn look! []
+  ;; set target to player coords
+  ;; transfer control to targeting system
+  (swap! db assoc
+         :target (get-in @world-state [:entities :player :coords])
+         :keychan target-chan :focused [:target-overlay 0] :background [:game-screen])
+  ;; force re-render
+  (render-ui @db)
+  ;; not an action, return nil
+  nil)
+
 ;; translates javascript keyboard event to input code
 ;; puts it on the channel specified in UI database
 ;;   the cond-> macro threads its first argument through pairs of statements
 ;;   applying the 2nd statement if the 1st is true
 ;;   cond-> [] with conj statements is a way to build up a vector
 (defn key-event [e]
-  ;(println (. e -keyCode))
+  (println (. e -keyCode))
   (put! (:keychan @db)
         (cond-> []
           (. e -shiftKey) (conj :shift)
@@ -174,6 +202,7 @@
              [13] #(open-box!)
              [32] #(open-box!)
              [27] #(menu!)
+             [76] #(look!)
              [73] #(inventory-menu!)})
 
 ;;maps input codes to functions for dialogs/menus
@@ -184,6 +213,20 @@
                     [13] #(click!)
                     [32] #(click!)
                     [27] #(close-menu!)})
+
+;;maps input codes to functions for target selection
+(def target-keymap {[37] #(move-target! [-1 0])
+                    [:shift 37] #(move-target! [-1 -1])
+                    [38] #(move-target! [0 -1])
+                    [:shift 38] #(move-target! [1 -1])
+                    [39] #(move-target! [1 0])
+                    [:shift 39] #(move-target! [1 1])
+                    [40] #(move-target! [0 1])
+                    [:shift 40] #(move-target! [-1 1])
+                    ;[13] #(click!)
+                    ;[32] #(click!)
+                    [27] #(close-menu!)})
+
 
 ;;"runs" in the background to execute player commands only on player turn
 (defn control-loop [signal-chan fn-chan]
@@ -256,6 +299,11 @@
     (go (while true (println (<! out))))
     ))
 
+;; when this fn is sent via channel to turn-loop, returns 
+;;   a result that causes loop to exit
+(defn quit-command []
+  {:end-game true})
+
 (defn new-game! []
   ;; if already running, send quit command to turn-loop
   (when (:running @db) (put! control-chan quit-command))
@@ -323,11 +371,22 @@
       (render-ui @db))
     (recur)))
 
+;;spawns a process that listens for keyboard codes sent to target-chan
+;;  should be called only once, in main!
+(defn target-loop []
+  (go-loop []
+    (when-let [f (get target-keymap (<! target-chan))]
+      (f)
+      ;;render new ui state to update view
+      (render-ui @db))
+    (recur)))
+
 ;; called when app first loads (as specified in shadow-cljs.edn)
 (defn main! []
   (. js/document addEventListener "keydown" key-event)
   (dialog-loop)
   (key-loop)
+  (target-loop)
   (go
     (when (<! (init-disp! (:dims @db)))
       (render-ui @db))))
