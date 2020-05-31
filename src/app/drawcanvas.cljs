@@ -1,6 +1,8 @@
 
 (ns app.drawcanvas
-  (:require [clojure.core.async :as a :refer [put! chan]]))
+  (:require [clojure.core.async :as a :refer [put! chan]]
+            [clojure.set :as set]
+            [app.utils :as utils :refer [contains-val?]]))
 
 ;; just functions for drawing to the display
 
@@ -130,13 +132,13 @@
 
 ;; an entity is a key-val pair
 ;;  where the val is a hashmap containing a :coords key
-(defn- draw-entity [d-context [k {:keys [coords fov]}]]
+(defn- draw-entity [d-context {:keys [id coords fov]}]
   (let [{:keys [ctx tiles tilemap icons]} d-context
         xy (mapv * coords TILE-DIMS)
-        sxy (get tilemap (get icons k))]
+        sxy (get tilemap (get icons id))]
     (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
     ;;TODO: make a separate function that decides when to light up field-of-view
-    (when-not (= k :player) (draw-glow fov))
+    (when-not (= id :player) (draw-glow fov))
     ))
 
 (defn- clear-canvas [d-context]
@@ -144,25 +146,29 @@
         [w h] dims]
     (.clearRect ctx 0 0 w h)))
 
+(defn entities-by-coords [world-state coord-map]
+  (filter #(contains-val? coord-map :coords %)
+          (vals (:entities world-state))))
+
 ;; draws grid and entities
 ;;   in the "visible" area of the world grid only
 (defn draw-visible [world-state]
-  (let [d-context @context]
+  (let [d-context @context
+        visible-entities (entities-by-coords world-state (:visible world-state))]
     ;;draw previously seen areas first
     (draw-seen d-context (:grid world-state) (:seen world-state))
     ;;then draw over those with currently visible area
     (draw-vis-grid d-context (:grid world-state) (:visible world-state))
     ;;draw entities whose coords are in the visible area
-    (doseq [e (:entities world-state)]
-      (when (get (:visible world-state) (:coords (val e)))
-        (draw-entity d-context e))
+    (doseq [e visible-entities]
+      (draw-entity d-context e)
       )))
 
 ;;   the entire world grid & all entities
 (defn draw-full [world-state]
   (let [d-context @context]
     (draw-mkvs d-context (:grid world-state))
-    (doseq [e (:entities world-state)] (draw-entity d-context e))
+    (doseq [e (vals (:entities world-state))] (draw-entity d-context e))
     ))
 
 ;; draw-element multimethod
@@ -215,10 +221,14 @@
         {:keys [target world-state]} (data)
         s @world-state
         ;; only show target info if coords are in the :seen list
-        visible-target (get-in s [:seen target])
+        seen-coords (set/intersection (:seen s) #{target})
+        ;; only show entity info if coords are in the :visible list
+        visible-coords (set/intersection (:visible s) #{target})
         ;; TODO - figure out where text descriptions should live
         ;; TODO - also search entities for coords
-        txt (get-in s [:grid visible-target])]
+        txt (concat (map (:grid s) seen-coords)
+                    (map :id (entities-by-coords s visible-coords)))
+        ]
     (set! (. ctx -font) "16px monospace")
     (draw-text ctx txt (mapv * TILE-DIMS pos) [255 255 255])
     ))
