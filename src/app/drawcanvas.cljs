@@ -1,8 +1,6 @@
 
 (ns app.drawcanvas
-  (:require [clojure.core.async :as a :refer [put! chan]]
-            [clojure.set :as set]
-            [app.utils :as utils :refer [contains-val?]]))
+  (:require [clojure.core.async :as a :refer [put! chan]]))
 
 ;; just functions for drawing to the display
 
@@ -146,15 +144,12 @@
         [w h] dims]
     (.clearRect ctx 0 0 w h)))
 
-(defn entities-by-coords [world-state coord-map]
-  (filter #(contains-val? coord-map :coords %)
-          (vals (:entities world-state))))
-
 ;; draws grid and entities
 ;;   in the "visible" area of the world grid only
 (defn draw-visible [world-state]
   (let [d-context @context
-        visible-entities (entities-by-coords world-state (:visible world-state))]
+        visible-entities (filter #(contains? (:visible world-state) (:coords %))
+                                 (vals (:entities world-state)))]
     ;;draw previously seen areas first
     (draw-seen d-context (:grid world-state) (:seen world-state))
     ;;then draw over those with currently visible area
@@ -214,20 +209,13 @@
     ))
 
 ;; :type :target-info
-;; :data fn returns ui database
+;; :data fn is world/get-info
 (defmethod draw-element :target-info [{:keys [pos data]}]
   (let [ctx (:ctx @context)
         ;; get target coords and world state
-        {:keys [target world-state]} (data)
-        s @world-state
-        ;; only show target info if coords are in the :seen list
-        seen-coords (set/intersection (:seen s) #{target})
-        ;; only show entity info if coords are in the :visible list
-        visible-coords (set/intersection (:visible s) #{target})
+        {:keys [coords grid seen? visible? entities]} (data)
         ;; TODO - figure out where text descriptions should live
-        ;; TODO - also search entities for coords
-        txt (concat (map (:grid s) seen-coords)
-                    (map :id (entities-by-coords s visible-coords)))
+        txt (str coords " " (when seen? grid) " " (when visible? entities))
         ]
     (set! (. ctx -font) "16px monospace")
     (draw-text ctx txt (mapv * TILE-DIMS pos) [255 255 255])

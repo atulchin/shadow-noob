@@ -45,7 +45,7 @@
                     :msg-panel [{:id :msg-pan :type :time-log :pos [40 1]
                                  :data #(deref db)}]
                     :target-overlay [{:id :cursor :type :cursor :data #(:target @db)}
-                                     {:id :info :type :target-info :pos [40 38] :data #(deref db)}]
+                                     {:id :info :type :target-info :pos [40 38] :data #(world/get-info (:target @db))}]
                     })
 
 ;; db should contain all info needed for generating the interface

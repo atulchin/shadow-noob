@@ -32,6 +32,16 @@
 
 (defn reset-state [] (reset! world-state init-state))
 
+(defn get-info [coords]
+  (let [s @world-state]
+    {:coords coords
+     :grid (get (:grid s) coords)
+     :seen? (contains? (:seen s) coords)
+     :visible? (contains? (:visible s) coords)
+     :entities (map :id (filter #(= coords (:coords %)) 
+                                (vals (:entities s))))}
+  ))
+
 ;; effects that can be applied to entities
 ;;  format is [:key updating-fn]
 (def effects {:speed [:move-time #(* % 0.5)]})

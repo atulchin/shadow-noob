@@ -18,6 +18,3 @@
 (defn sample [n coll]
   (take n (shuffle coll)))
 
-;; true if the value of key k in map m is in the keys of s
-(defn contains-val? [s k m]
-  (contains? s (get m k)))
