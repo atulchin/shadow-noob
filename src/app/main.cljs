@@ -14,8 +14,10 @@
 (defonce key-chan (chan (dropping-buffer 5)))
 ;;  dialog-chan is read by ui dialogs/menus
 (defonce dialog-chan (chan (dropping-buffer 5)))
-;;  target-chan read by targeting system
+;;  targeting interface: target-ch for reading input
+;;    select-ch for sending selection
 (defonce target-chan (chan (dropping-buffer 5)))
+(defonce select-chan (chan))
 ;;  control-chan is read during player's turn
 ;;    other processes should send functions to it
 (defonce control-chan (chan (dropping-buffer 5)))
@@ -84,6 +86,9 @@
   (swap! db assoc :focused [:char-menu 0 :elements 3] :background [:game-screen])
   nil)
 
+(defn game-screen! []
+  (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background []))
+
 ;; ui controls
 (defn move-focus [s i]
   (let [{ui-comps :ui-components key-coll :focused} s
@@ -123,19 +128,55 @@
   (swap! db move-target [x y])
   nil)
 
+(defn select-target! []
+  (let [targ-info (world/get-info (:target @db))]
+    ;; only allow targeting seen/visible grid squares
+    (when (and (:seen? targ-info) (:grid targ-info))
+      ;; send target info to select-ch
+      (put! select-chan targ-info)
+      ;; give control to game screen
+      (game-screen!)))
+  nil)
+
 (defn close-menu! []
   ;; TODO - need to keep track of previous state
   ;; for now, just give control to game screen
   (when (:running @db)
-    (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background []))
+    (game-screen!))
   nil)
+
+(defn cancel-target! []
+  ;; send empty record to select-ch
+  (put! select-chan {})
+  ;; TODO - need to keep track of previous state
+  ;; for now, just give control to game screen
+  (game-screen!)
+  nil)
+
+(defn target-ui! []
+  (swap! db assoc
+         :target (get-in @world-state [:entities :player :coords])
+         :keychan target-chan :focused [:target-overlay 0] :background [:game-screen]))
 
 ;; called when an inventory item is clicked
 (defn inv-click! [k]
-  ;; give control back to game screen
-  (swap! db assoc :keychan key-chan :focused [:game-screen 0] :background [])
-  ;; send use-item command to turn loop
-  (put! control-chan #(player-item! k))
+  ;; if item requires target:
+  (if (:target (meta (get world/items k)))
+    (do
+      ;; transfer control to targeting interface
+      (target-ui!)
+      ;; spawn process that will wait for a target
+      (go (let [targ-info (<! select-chan)]
+            ;; if target provided, send use-item command to turn loop 
+            (when (seq targ-info) (put! control-chan #(player-item! k targ-info)))
+            )))
+    ;; else, item doesn't require target:
+    (do
+      ;; give control back to game screen
+      (game-screen!)
+      ;; for items that don't require target, pass empty map
+      (put! control-chan #(player-item! k {}))
+      ))
   nil)
 
 ;; generate a menu from an inventory hashmap
@@ -168,13 +209,20 @@
 
 (defn look! []
   ;; set target to player coords
-  ;; transfer control to targeting system
-  (swap! db assoc
-         :target (get-in @world-state [:entities :player :coords])
-         :keychan target-chan :focused [:target-overlay 0] :background [:game-screen])
+  ;; transfer control to targeting interface
+  (target-ui!)
   ;; force re-render
   (render-ui @db)
-  ;; not an action, return nil
+  ;; spawn process that will read target selection
+  ;;   just send to log for now
+  (go (let [{:keys [coords seen? visible? grid entities time]} (<! select-chan)]
+        (when seen?
+          (swap! db update :log conj
+                 {:msg (str coords " " (when seen? grid) " " (when visible? entities))
+                  :time time})
+          (render-ui @db))
+        ))
+  ;; not an action, return nil  
   nil)
 
 ;; translates javascript keyboard event to input code
@@ -183,7 +231,7 @@
 ;;   applying the 2nd statement if the 1st is true
 ;;   cond-> [] with conj statements is a way to build up a vector
 (defn key-event [e]
-  (println (. e -keyCode))
+  ;(println (. e -keyCode))
   (put! (:keychan @db)
         (cond-> []
           (. e -shiftKey) (conj :shift)
@@ -223,9 +271,9 @@
                     [:shift 39] #(move-target! [1 1])
                     [40] #(move-target! [0 1])
                     [:shift 40] #(move-target! [-1 1])
-                    ;[13] #(click!)
-                    ;[32] #(click!)
-                    [27] #(close-menu!)})
+                    [13] #(select-target!)
+                    [32] #(select-target!)
+                    [27] #(cancel-target!)})
 
 
 ;;"runs" in the background to execute player commands only on player turn

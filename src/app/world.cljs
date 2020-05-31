@@ -35,6 +35,7 @@
 (defn get-info [coords]
   (let [s @world-state]
     {:coords coords
+     :time (:time s)
      :grid (get (:grid s) coords)
      :seen? (contains? (:seen s) coords)
      :visible? (contains? (:visible s) coords)
@@ -74,34 +75,45 @@
       (assoc-in state [:entities entity-key :inv item-key] qty)
       )))
 
-(defn teleport [state entity-key]
-  (let [s' (assoc-in state [:entities entity-key :coords] (rand-nth (keys (:grid state))))
-        fov (compute-fov (get-entity s' entity-key))
+(defn teleport [state entity-key target-info]
+  (let [target-key (first (:entities target-info))
+        ;;if no target key, entity is target
+        t (or target-key entity-key)
+        ;; if no entity targeted but grid loc targeted, set location to targeted loc
+        ;; otherwise, set location to random grid loc
+        loc (if (and (nil? target-key) (:grid target-info)) 
+              (:coords target-info)
+              (rand-nth (keys (:grid state))))
+        ;; change loc of target entity
+        s' (assoc-in state [:entities t :coords] loc)
+        fov (compute-fov (get-entity s' t))
         player-fov (compute-fov (get-entity s' :player))]
     (-> s'
         ;;update entity's fov
-        (assoc-in [:entities entity-key :fov] fov)
+        (assoc-in [:entities t :fov] fov)
         ;;update player's vision
         (update-vis player-fov))
     ))
 
-;; item values are functions of world-state and entity-key
-(def items {:potion-speed (fn [state k] (-> state
+;; item values are functions of world-state, entity-key, and
+;;   target-info (as returned by get-info)
+;; metadata {:target true} if item requires a target
+(def items {:potion-speed (fn [state k _] (-> state
                                        (add-effect k :speed 100)
                                        (remove-item k :potion-speed)))
-            :scroll-teleport (fn [state k] (-> state
-                                          (teleport k)
+            :scroll-teleport ^:target (fn [state k t] (-> state
+                                          (teleport k t)
                                           (remove-item k :scroll-teleport)))
             })
 
-(defn use-item! [entity-key item-key]
+(defn use-item! [entity-key item-key target-info]
   (let [f (get items item-key)]
-    (swap! world-state f entity-key))
+    (swap! world-state f entity-key target-info))
   ;;return a result
   {:item item-key :entity entity-key :dt 10})
 
-(defn player-item! [item-key]
-  (use-item! :player item-key))
+(defn player-item! [item-key target-info]
+  (use-item! :player item-key target-info))
 
 ;; grid directions are stored in rot-js as a javascript object
 ;;   convert to clj vector
