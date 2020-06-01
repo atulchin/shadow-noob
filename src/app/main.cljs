@@ -42,10 +42,9 @@
                                              :data #(get-in @db [:options :vision])
                                              :effect #(set-option! :speed false :vision true)}
                                             {:id :ok :pos 3 :type :button :txt " [  OK  ]" :effect #(new-game!)}]}]
-                    ;; game-screen component contains a fn that queries world-state
-                    :game-screen [{:id :world-map :type :grid :data #(deref (:world-state @db))}]
-                    :msg-panel [{:id :msg-pan :type :time-log :pos [40 1]
-                                 :data #(deref db)}]
+                    :game-screen [{:id :world-map :type :grid 
+                                   :data #(select-keys @db [:world-state :focused :target])}]
+                    :msg-panel [{:id :msg-pan :type :time-log :pos [40 1] :data #(:log @db)}]
                     :target-overlay [{:id :cursor :type :cursor :data #(:target @db)}
                                      {:id :info :type :target-info :pos [40 38] :data #(world/get-info (:target @db))}]
                     })
@@ -55,7 +54,7 @@
                    :world-state world-state
                    :keychan dialog-chan
                    :focused [:start-menu 0] :background [] :foreground []
-                   :dims [60 40] :target [0 0]
+                   :map-dims [100 70] :screen-dims [60 40] :target [0 0]
                    :options {} :log []
                    :running false}))
 
@@ -120,7 +119,7 @@
   (update s :target
           #(->> %
                 (mapv + [x y])
-                (mapv min (:dims s))
+                (mapv min (:map-dims s))
                 (mapv max [0 0])
                 )))
 
@@ -165,7 +164,7 @@
     (do
       ;; transfer control to targeting interface
       (target-ui!)
-      ;; spawn process that will wait for a target
+      ;; spawn process that will wait for target info
       (go (let [targ-info (<! select-chan)]
             ;; if target provided, send use-item command to turn loop 
             (when (seq targ-info) (put! control-chan #(player-item! k targ-info)))
@@ -174,7 +173,7 @@
     (do
       ;; give control back to game screen
       (game-screen!)
-      ;; for items that don't require target, pass empty map
+      ;; send use-item command to turn loop, with empty map as target info
       (put! control-chan #(player-item! k {}))
       ))
   nil)
@@ -352,9 +351,16 @@
 (defn quit-command []
   {:end-game true})
 
+;; calculates drawing boundaries when map grid is larger than screen
+(defn calc-breakpoints [[x y] [a b]]
+  {:x (map #(+ (quot (rem x a) 2) %) (map #(* % a) (range (inc (quot x a)))))
+   :y (map #(+ (quot (rem y b) 2) %) (map #(* % b) (range (inc (quot y b)))))})
+
 (defn new-game! []
   ;; if already running, send quit command to turn-loop
   (when (:running @db) (put! control-chan quit-command))
+  ;;display has already been init'ed, just reset defaults
+  (draw/reset-defaults)
   ;;transfer control to game screen
   (swap! db merge new-game-state)
   ;;(re)set world state
@@ -362,12 +368,12 @@
   ;;apply options set through UI
   (game-options! (:options @db))
   ;;generate the game world
-  (world/init-grid! (:dims @db))
-  ;;display has already been init'ed, just reset defaults
-  (draw/reset-defaults)
+  (world/init-grid! (:map-dims @db))
+  ;;update drawing boundaries
+  ;;TODO - move this and map creation to a separate fn
+  (draw/set-breakpts! (calc-breakpoints (:map-dims @db) (:screen-dims @db)))
   ;;start the game
   (init-turn-loop))
-
 
 ;; put game rule logic in this fn for now
 ;;  returns true if game continues
@@ -436,7 +442,7 @@
   (key-loop)
   (target-loop)
   (go
-    (when (<! (init-disp! (:dims @db)))
+    (when (<! (init-disp! (:screen-dims @db)))
       (render-ui @db))))
 
 ;; hot reload; called by shadow-cljs when code is saved

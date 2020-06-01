@@ -13,7 +13,10 @@
                         :dims [0 0]
                         :tiles nil
                         :tilemap {}
-                        :icons {}}))
+                        :icons {}
+                        ;;store drawing boundaries when map grid is larger than screen
+                        :breakpoints {:x [] :y []}
+                        }))
 
 (def defaults {:tilemap {"@" (mapv * GRAB-DIMS [25 0])
                            "." (mapv * GRAB-DIMS [11 0])
@@ -30,6 +33,19 @@
 
 (defn reset-defaults []
   (swap! context merge defaults))
+
+(defn set-breakpts! [m]
+  (swap! context assoc :breakpoints m))
+
+;;returns max breakpoints less than focal coords
+(defn get-grid-start [breaks [i j]]
+  (let [xs (filter #(<= % i) (:x breaks))
+        ys (filter #(<= % j) (:y breaks))]
+    [(or (apply max xs) 0) (or (apply max ys) 0)]))
+
+;;convert grid coords to screen coords
+(defn screen-coords [grid-coords zero-coords]
+  (mapv * TILE-DIMS (mapv - grid-coords zero-coords)))
 
 ;;set display options and add it to the document body
 (defn init-disp! [[w h]]
@@ -78,31 +94,31 @@
 
 ;;draws a yellow glow based on k-v data
 ;;  keys are coords; vals are light intensity
-(defn draw-glow [mkvs]
-  (let [{:keys [ctx]} @context]
+(defn draw-glow [d-context mkvs]
+  (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
-      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [255 255 0 (* v 0.2)])
+      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [255 255 0 (* v 0.2)])
       )))
 
 ;;draws shadows based on k-v data
 ;; keys are coords; vals are light intensity
-(defn draw-shadow [mkvs]
-  (let [{:keys [ctx]} @context]
+(defn draw-shadow [d-context mkvs]
+  (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
-      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [0 0 0 (* 0.5 (- 1.0 v))])
+      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [0 0 0 (* 0.5 (- 1.0 v))])
       )))
 
 ;;draws a steady shadow over the coords in the given vector
-(defn draw-dark [vec]
-  (let [{:keys [ctx]} @context]
+(defn draw-dark [d-context vec]
+  (let [{:keys [ctx grid-start]} d-context]
     (doseq [k vec]
-      (draw-rect ctx (mapv * TILE-DIMS k) TILE-DIMS [0 0 0 0.6])
+      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [0 0 0 0.6])
       )))
 
 ;;draws a named object to xy coords contained in k
 (defn- draw-coords [d-context [k v]]
-  (let [{:keys [ctx tiles tilemap icons]} d-context
-        xy (mapv * k TILE-DIMS)
+  (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
+        xy (screen-coords k grid-start)
         sxy (get tilemap (get icons v))]
     ;; clear first
     (clear-tile ctx xy TILE-DIMS)
@@ -120,23 +136,23 @@
 (defn- draw-vis-grid [d-context full-grid vismap]
   (let [mkvs (select-keys full-grid (keys vismap))]
     (draw-mkvs d-context mkvs)
-    (draw-shadow vismap)))
+    (draw-shadow d-context vismap)))
 
 ;;draws previously visible coords (listed in seen-set) overlaid with shadow
 (defn- draw-seen [d-context full-grid seen-set]
   (let [mkvs (select-keys full-grid seen-set)]
     (draw-mkvs d-context mkvs)
-    (draw-dark seen-set)))
+    (draw-dark d-context seen-set)))
 
 ;; an entity is a key-val pair
 ;;  where the val is a hashmap containing a :coords key
 (defn- draw-entity [d-context {:keys [id coords fov]}]
-  (let [{:keys [ctx tiles tilemap icons]} d-context
-        xy (mapv * coords TILE-DIMS)
+  (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
+        xy (screen-coords coords grid-start)
         sxy (get tilemap (get icons id))]
     (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
     ;;TODO: make a separate function that decides when to light up field-of-view
-    (when-not (= id :player) (draw-glow fov))
+    (when-not (= id :player) (draw-glow d-context fov))
     ))
 
 (defn- clear-canvas [d-context]
@@ -146,8 +162,10 @@
 
 ;; draws grid and entities
 ;;   in the "visible" area of the world grid only
-(defn draw-visible [world-state]
-  (let [d-context @context
+(defn draw-visible [world-state focal-coords]
+  ;;update drawing area based on pre-calculated breakpoints
+  (let [d-context (as-> @context c 
+                    (assoc c :grid-start (get-grid-start (:breakpoints c) focal-coords)))
         visible-entities (filter #(contains? (:visible world-state) (:coords %))
                                  (vals (:entities world-state)))]
     ;;draw previously seen areas first
@@ -159,8 +177,8 @@
       (draw-entity d-context e)
       )))
 
-;;   the entire world grid & all entities
-(defn draw-full [world-state]
+;;   the entire grid & all entities
+#_(defn draw-full [world-state]
   (let [d-context @context]
     (draw-mkvs d-context (:grid world-state))
     (doseq [e (vals (:entities world-state))] (draw-entity d-context e))
@@ -173,7 +191,12 @@
 ;; :type :grid draws the world grid 
 ;;   (element's :data key is a function that returns it)
 (defmethod draw-element :grid [{:keys [data]}]
-  (draw-visible (data)))
+  (let [{:keys [world-state focused target]} (data)
+        s @world-state
+        focal-coords (if (= (first focused) :target-overlay)
+                       target
+                       (get-in s [:entities :player :coords]))]
+    (draw-visible s focal-coords)))
 
 ;; :type :button draws a text button
 ;;   element's :data key contains a function
@@ -200,12 +223,13 @@
   )
 
 ;; :type :cursor
-;; :data fn returns position
+;; :data fn returns coords
 (defmethod draw-element :cursor [{:keys [data]}]
-  (let [ctx (:ctx @context)
-        pos (data)]
+  (let [{:keys [ctx breakpoints]} @context
+        coords (data)
+        grid-start (get-grid-start breakpoints coords)]
     (set! (. ctx -font) "24px monospace")
-    (draw-rect ctx (mapv * TILE-DIMS pos) TILE-DIMS [255 255 0 0.4])
+    (draw-rect ctx (screen-coords coords grid-start) TILE-DIMS [255 255 0 0.4])
     ))
 
 ;; :type :target-info
@@ -224,7 +248,7 @@
 ;; :type :time-log
 (defmethod draw-element :time-log [{:keys [pos data] :or {data (fn [_] nil)}}]
   (let [ctx (:ctx @context)
-        {logv :log} (data)
+        logv (data)
         data-vec (subvec logv (max 0 (- (count logv) 5)))
         current-time (:time (peek data-vec))]
     (set! (. ctx -font) "16px monospace")

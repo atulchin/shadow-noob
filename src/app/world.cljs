@@ -230,7 +230,7 @@
 ;;   rot-js pathfinder includes the starting point as the first item in the path
 ;; returns remanining path length
 (defn- follow-path! [entity-key [start-coords next-step & rest-of-path]]
-  (when next-step
+  (if next-step
     ;;save the change from previous coordinates
     (let [delta (mapv - next-step (get-in @world-state [:entities entity-key :coords]))]
       ;;update coordinates and coordinate change
@@ -245,7 +245,8 @@
          :move next-step
          :dt (* (:move-time e)
                 (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} delta) (:diag e) 1.0))}))
-    
+    ;;else entity is already at end of path
+    {:path-length 0 :dt 0}
     ))
 
 ;; entity behavior: move towards target entity
