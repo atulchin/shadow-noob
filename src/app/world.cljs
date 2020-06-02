@@ -194,7 +194,7 @@
 
 ;; fov computation: takes an entity record
 ;; multimehtod dispatch based on :fov-fn
-(defmulti compute-fov #(:fov-fn %))
+(defmulti compute-fov :fov-fn)
 
 ;;fov functions used by entities
 ;;  create a tmp mutable ref for callback fn, then return clj data struct

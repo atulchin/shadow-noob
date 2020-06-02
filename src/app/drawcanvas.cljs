@@ -162,10 +162,10 @@
 
 ;; draws grid and entities
 ;;   in the "visible" area of the world grid only
-(defn draw-visible [world-state focal-coords]
+(defn draw-visible [context-map world-state focal-coords]
   ;;update drawing area based on pre-calculated breakpoints
-  (let [d-context (as-> @context c 
-                    (assoc c :grid-start (get-grid-start (:breakpoints c) focal-coords)))
+  (let [d-context (assoc context-map :grid-start 
+                         (get-grid-start (:breakpoints context-map) focal-coords))
         visible-entities (filter #(contains? (:visible world-state) (:coords %))
                                  (vals (:entities world-state)))]
     ;;draw previously seen areas first
@@ -177,56 +177,41 @@
       (draw-entity d-context e)
       )))
 
-;;   the entire grid & all entities
-#_(defn draw-full [world-state]
-  (let [d-context @context]
-    (draw-mkvs d-context (:grid world-state))
-    (doseq [e (vals (:entities world-state))] (draw-entity d-context e))
-    ))
-
 ;; draw-element multimethod
 ;;   draws different things depending on :type key
-(defmulti draw-element #(:type %))
+(defmulti draw-element (fn [elem focused? d-context] (:type elem)))
 
 ;; :type :grid draws the world grid 
 ;;   (element's :data key is a function that returns it)
-(defmethod draw-element :grid [{:keys [data]}]
-  (let [{:keys [world-state focused target]} (data)
-        s @world-state
-        focal-coords (if (= (first focused) :target-overlay)
-                       target
-                       (get-in s [:entities :player :coords]))]
-    (draw-visible s focal-coords)))
+(defmethod draw-element :grid [{:keys [data]} _ d-context]
+  (let [{:keys [world-state focal-coords]} (data)]
+    (draw-visible d-context world-state focal-coords)))
 
 ;; :type :button draws a text button
 ;;   element's :data key contains a function
-(defmethod draw-element :button [{:keys [txt pos focused?]}]
-  (let [ctx (:ctx @context)]
-    (set! (. ctx -font) "24px monospace")
-    (draw-text ctx txt
-               (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
-               (if focused? [255 255 80] [180 180 180]))
-    ))
+(defmethod draw-element :button [{:keys [txt pos]} focused? {:keys [ctx]}]
+  (set! (. ctx -font) "24px monospace")
+  (draw-text ctx txt
+             (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
+             (if focused? [255 255 80] [180 180 180])))
 
 ;; :type :checkbox
 ;;   element's :data key contains a function
-(defmethod draw-element :checkbox [{:keys [txt pos focused? data] :or {data (fn [_] nil)}}]
-  (let [ctx (:ctx @context)]
-    (set! (. ctx -font) "24px monospace")
-    (draw-text ctx (str (if (data) "[*] " "[ ] ") txt)
-               (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
-               (if focused? [255 255 80] [180 180 180]))
-    ))
+(defmethod draw-element :checkbox 
+  [{:keys [txt pos data] :or {data (fn [_] nil)}} focused? {:keys [ctx]}]
+  (set! (. ctx -font) "24px monospace")
+  (draw-text ctx (str (if (data) "[*] " "[ ] ") txt)
+             (mapv * TILE-DIMS (mapv + [20 10] [0 (* 1.5 pos)]))
+             (if focused? [255 255 80] [180 180 180])))
 
-(defmethod draw-element :panel [{:keys [pos]}]
+(defmethod draw-element :panel [{:keys [pos]} _ d-context]
   ;;draw a box
   )
 
 ;; :type :cursor
 ;; :data fn returns coords
-(defmethod draw-element :cursor [{:keys [data]}]
-  (let [{:keys [ctx breakpoints]} @context
-        coords (data)
+(defmethod draw-element :cursor [{:keys [data]} _ {:keys [ctx breakpoints]}]
+  (let [coords (data)
         grid-start (get-grid-start breakpoints coords)]
     (set! (. ctx -font) "24px monospace")
     (draw-rect ctx (screen-coords coords grid-start) TILE-DIMS [255 255 0 0.4])
@@ -234,9 +219,8 @@
 
 ;; :type :target-info
 ;; :data fn is world/get-info
-(defmethod draw-element :target-info [{:keys [pos data]}]
-  (let [ctx (:ctx @context)
-        ;; get target coords and world state
+(defmethod draw-element :target-info [{:keys [pos data]} _ {:keys [ctx]}]
+  (let [;; get target coords and world state
         {:keys [coords grid seen? visible? entities]} (data)
         ;; TODO - figure out where text descriptions should live
         txt (str coords " " (when seen? grid) " " (when visible? entities))
@@ -246,9 +230,8 @@
     ))
 
 ;; :type :time-log
-(defmethod draw-element :time-log [{:keys [pos data] :or {data (fn [_] nil)}}]
-  (let [ctx (:ctx @context)
-        logv (data)
+(defmethod draw-element :time-log [{:keys [pos data] :or {data (fn [_] nil)}} _ {:keys [ctx]}]
+  (let [logv (data)
         data-vec (subvec logv (max 0 (- (count logv) 5)))
         current-time (:time (peek data-vec))]
     (set! (. ctx -font) "16px monospace")
@@ -261,23 +244,24 @@
       )))
 
 ;; called by render-ui, takes collection of elements to draw
-(defn draw-group [coll focused-elem]
+(defn draw-group [coll focused-elem d-context]
   (doseq [x coll]
-    (draw-element (assoc x :focused? (= x focused-elem)))
+    (draw-element x (= x focused-elem) d-context)
     (when-let [sub-coll (:elements x)]
-      (draw-group sub-coll focused-elem))
+      (draw-group sub-coll focused-elem d-context))
     ))
 
 ;; called from main, takes UI db
 (defn render-ui [{:keys [ui-components background focused foreground]}]
-  (clear-canvas @context)
-  (let [[fg-key _] focused]
+  (let [[fg-key _] focused
+        d-context @context]
+    (clear-canvas d-context)
     ;;do background comps first
     ;;  iterate through items within the component (no item is focused here)
-    (doseq [k background] (draw-group (get ui-components k) nil))
+    (doseq [k background] (draw-group (get ui-components k) nil d-context))
     ;;render the focused comp on top; focused sub-element may be drawn differently
-    (draw-group (get ui-components fg-key) (get-in ui-components focused))
+    (draw-group (get ui-components fg-key) (get-in ui-components focused) d-context)
     ;;overlay foreground comps
-    (doseq [k foreground] (draw-group (get ui-components k) nil))
+    (doseq [k foreground] (draw-group (get ui-components k) nil d-context))
     ))
 

@@ -42,8 +42,16 @@
                                              :data #(get-in @db [:options :vision])
                                              :effect #(set-option! :speed false :vision true)}
                                             {:id :ok :pos 3 :type :button :txt " [  OK  ]" :effect #(new-game!)}]}]
-                    :game-screen [{:id :world-map :type :grid 
-                                   :data #(select-keys @db [:world-state :focused :target])}]
+                    :game-screen [{:id :world-map :type :grid
+                                   :data (fn []
+                                           (let [{:keys [focused target world-ref]} @db
+                                                 s @world-ref]
+                                             {:world-state s
+                                              :focal-coords (if (= (first focused) :target-overlay)
+                                                              target
+                                                              (get-in s [:entities :player :coords]))}
+                                             ))
+                                   }]
                     :msg-panel [{:id :msg-pan :type :time-log :pos [40 1] :data #(:log @db)}]
                     :target-overlay [{:id :cursor :type :cursor :data #(:target @db)}
                                      {:id :info :type :target-info :pos [40 38] :data #(world/get-info (:target @db))}]
@@ -51,7 +59,7 @@
 
 ;; db should contain all info needed for generating the interface
 (defonce db (atom {:ui-components ui-components
-                   :world-state world-state
+                   :world-ref world-state
                    :keychan dialog-chan
                    :focused [:start-menu 0] :background [] :foreground []
                    :map-dims [100 70] :screen-dims [60 40] :target [0 0]
@@ -295,12 +303,14 @@
 
 ;;take-turn returns a channel containing result
 ;; multi-method dispatch based on :type key
-(defmulti take-turn #(:type %))
+(defmulti take-turn :type)
 
 ;; re-draw the screen at start of player's turn
 ;; player-result channel will contain a result when control-loop puts one there
 (defmethod take-turn :local-player [_]
   (render-ui @db)
+  ;; TODO - maybe use this channel to pass entity info to control loop?
+  ;;   since it's already passed to this function by turn loop
   (put! player-turn true)
   player-result)
 
