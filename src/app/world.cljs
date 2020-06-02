@@ -163,51 +163,37 @@
     (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
     ))
 
-;; rot-js pathfinder needs a callback fn to determine if a cell is passable
-;;  this generates and returns that fn
-(defn- pass-callback []
-  (fn [x y]
-    (contains? (:grid @world-state) [x y])))
-
-;; rot-js FOV needs a callback to determine if a cell is transparent
-(defn- light-callback []
-  (fn [x y]
-    (contains? (:grid @world-state) [x y])))
-
-;; rot-js pathfinder builds a path using a callback fn to mutate an object
-;;  this generates and returns that fn
-(defn- path-callback [path-ref]
-  (fn [x y]
-    (swap! path-ref conj [x y])))
-
-;; rot-js FOV returns data using a callback
-;;   x and y coords, r = distance, v = visibility
-(defn- fov-callback [data-ref]
-  (fn [x y r v]
-    (swap! data-ref assoc [x y] v)))
-
-;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
-(defonce FOV-P (rot/FOV.PreciseShadowcasting. (light-callback)))
-
-;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
-(defonce FOV-R (rot/FOV.RecursiveShadowcasting. (light-callback)))
-
 ;; fov computation: takes an entity record
 ;; multimehtod dispatch based on :fov-fn
 (defmulti compute-fov :fov-fn)
 
 ;;fov functions used by entities
-;;  create a tmp mutable ref for callback fn, then return clj data struct
 (defmethod compute-fov :fov-360 [{[x y] :coords vision :vision}]
-  (let [data-ref (atom {})]
-    (.compute FOV-P x y vision (fov-callback data-ref))
-    @data-ref))
+  ;; create a tmp mutable ref for callback fn, then return clj data struct
+  ;; [does making a vector inside an atom transient do anything?]
+  (let [data-ref (atom (transient {}))
+        {:keys [grid]} @world-state
+        ;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
+        ;; rot-js FOV needs a callback to determine if a cell is transparent
+        FOV-P (rot/FOV.PreciseShadowcasting. #(contains? grid [%1 %2]))
+        ]
+    ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
+    (.compute FOV-P x y vision #(swap! data-ref assoc! [%1 %2] %4))
+    (persistent! @data-ref)))
 
 (defmethod compute-fov :fov-90 [{[x y] :coords vision :vision delta :delta}]
-  (let [data-ref (atom {})
-        dir (.indexOf dirs delta)]
-    (.compute90 FOV-R x y vision dir (fov-callback data-ref))
-    @data-ref))
+  ;; create a tmp mutable ref for callback fn, then return clj data struct
+  ;; [does making a vector inside an atom transient do anything?]
+  (let [data-ref (atom (transient {}))
+        dir (.indexOf dirs delta)
+        {:keys [grid]} @world-state
+        ;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
+        ;; rot-js FOV needs a callback to determine if a cell is transparent
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(contains? grid [%1 %2]))
+        ]
+    ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
+    (.compute90 FOV-R x y vision dir #(swap! data-ref assoc! [%1 %2] %4))
+    (persistent! @data-ref)))
 
 ;;for updating world visibility info based on given fov data
 (defn update-vis [state fovmap]
@@ -215,15 +201,19 @@
       (assoc :visible fovmap)
       (update :seen into (keys fovmap))))
 
-;; create a temporary mutable ref for rot-js pathfinder to use
-;;   then return an ordinary clj vector
 ;; start and destination are coord pairs
 ;;   topo = # of movement directions
 (defn- compute-path [[start-x start-y] [dest-x dest-y] topo]
-  (let [astar (rot/Path.AStar. dest-x dest-y (pass-callback) #js{:topology topo})
-        path-ref (atom [])]
-    (.compute astar start-x start-y (path-callback path-ref))
-    (into [] @path-ref)))
+  (let [{:keys [grid]} @world-state
+        ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
+        astar (rot/Path.AStar. dest-x dest-y #(contains? grid [%1 %2]) #js{:topology topo})
+        ;; create a temporary mutable ref for rot-js pathfinder to use
+        ;;  [does making a vector inside an atom transient do anything?]
+        path-ref (atom (transient []))]
+    ;; rot-js pathfinder builds a path using a callback fn to mutate an object
+    (.compute astar start-x start-y #(swap! path-ref conj! [%1 %2]))
+    ;; return an ordinary clj vector
+    (persistent! @path-ref)))
 
 ;; mutate the :coords of the provided entity within world-state
 ;; path is a vector of coordinate pairs
@@ -261,6 +251,7 @@
 ;; moves player in a given grid direction
 ;;   updates world state
 ;;   returns result if player was moved, otherwise nil
+;; TODO - some inefficiency in this fn
 (defn move-player! [d]
   (let [s @world-state
         delta (dirs d)

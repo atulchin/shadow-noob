@@ -144,8 +144,7 @@
     (draw-mkvs d-context mkvs)
     (draw-dark d-context seen-set)))
 
-;; an entity is a key-val pair
-;;  where the val is a hashmap containing a :coords key
+;; takes entity val
 (defn- draw-entity [d-context {:keys [id coords fov]}]
   (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
         xy (screen-coords coords grid-start)
