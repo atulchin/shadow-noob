@@ -37,11 +37,20 @@
 (defn set-breakpts! [m]
   (swap! context assoc :breakpoints m))
 
+;; calculates drawing boundaries when map grid is larger than screen
+(defn calc-breakpoints [[x y] [a b]]
+  #_{:x (map #(+ (quot (rem x a) 2) %) (map #(* % a) (range (inc (quot x a)))))
+   :y (map #(+ (quot (rem y b) 2) %) (map #(* % b) (range (inc (quot y b)))))}
+  {:x (dec (quot a 2)) :y (dec (quot b 2))}
+  )
+
 ;;returns max breakpoints less than focal coords
 (defn get-grid-start [breaks [i j]]
-  (let [xs (filter #(<= % i) (:x breaks))
+  #_(let [xs (filter #(<= % i) (:x breaks))
         ys (filter #(<= % j) (:y breaks))]
-    [(or (apply max xs) 0) (or (apply max ys) 0)]))
+    [(or (apply max xs) 0) (or (apply max ys) 0)])
+  [(- i (:x breaks)) (- j (:y breaks))]
+  )
 
 ;;convert grid coords to screen coords
 (defn screen-coords [grid-coords zero-coords]

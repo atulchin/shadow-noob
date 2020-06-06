@@ -28,9 +28,14 @@
                                     :move-time 10 :diag 2.0
                                     :action #(chase! :pedro :player 4)}}
                  :time 0
-                 :effects #{}})
+                 :effects #{}
+                 })
 
-(defn reset-state [] (reset! world-state init-state))
+(defonce flow-fields (atom {}))
+
+(defn reset-state [] 
+  (reset! flow-fields {})
+  (reset! world-state init-state))
 
 (defn get-info [coords]
   (let [s @world-state]
@@ -39,9 +44,15 @@
      :grid (get (:grid s) coords)
      :seen? (contains? (:seen s) coords)
      :visible? (contains? (:visible s) coords)
-     :entities (map :id (filter #(= coords (:coords %)) 
-                                (vals (:entities s))))}
-  ))
+     :entities (map :id (filter #(= coords (:coords %))
+                                (vals (:entities s))))}))
+
+(defn update-player-field! [state]
+  (swap! flow-fields assoc :player
+            (utils/breadth-first (:grid state)
+                                 #{(get-in state [:entities :player :coords])}
+                                 utils/neigh8
+                                 30)))
 
 ;; effects that can be applied to entities
 ;;  format is [:key updating-fn]
@@ -50,7 +61,7 @@
 ;; active effects are listed in state's :effects field
 ;;  as [:entity entity-key :effect effect-key :end end-time]
 (defn add-effect [state entity-key effect-key duration]
-  (update state :effects conj 
+  (update state :effects conj
           {:entity entity-key :effect effect-key :end (+ (:time state) duration)}))
 
 ;; returns state with time t and expired effects removed
@@ -61,8 +72,7 @@
 ;; return entity with effects applied
 (defn get-entity [state k]
   (let [e-fx (map :effect (set/select #(= (:entity %) k) (:effects state)))]
-    (reduce #(apply update %1 (get effects %2)) (get-in state [:entities k]) e-fx)
-    ))
+    (reduce #(apply update %1 (get effects %2)) (get-in state [:entities k]) e-fx)))
 
 ;; items
 (defn add-item [state entity-key item-key]
@@ -72,8 +82,7 @@
   (let [qty (dec (get-in state [:entities entity-key :inv item-key]))]
     (if (< qty 1)
       (update-in state [:entities entity-key :inv] dissoc item-key)
-      (assoc-in state [:entities entity-key :inv item-key] qty)
-      )))
+      (assoc-in state [:entities entity-key :inv item-key] qty))))
 
 (defn teleport [state entity-key target-info]
   (let [target-key (first (:entities target-info))
@@ -81,13 +90,16 @@
         t (or target-key entity-key)
         ;; if no entity targeted but grid loc targeted, set location to targeted loc
         ;; otherwise, set location to random grid loc
-        loc (if (and (nil? target-key) (:grid target-info)) 
+        loc (if (and (nil? target-key) (:grid target-info))
               (:coords target-info)
               (rand-nth (keys (:grid state))))
         ;; change loc of target entity
         s' (assoc-in state [:entities t :coords] loc)
         fov (compute-fov (get-entity s' t))
         player-fov (compute-fov (get-entity s' :player))]
+    ;;in case player moved:
+    ;;TODO - move this
+    (update-player-field! s')
     (-> s'
         ;;update entity's fov
         (assoc-in [:entities t :fov] fov)
@@ -99,12 +111,11 @@
 ;;   target-info (as returned by get-info)
 ;; metadata {:target true} if item requires a target
 (def items {:potion-speed (fn [state k _] (-> state
-                                       (add-effect k :speed 100)
-                                       (remove-item k :potion-speed)))
+                                              (add-effect k :speed 100)
+                                              (remove-item k :potion-speed)))
             :scroll-teleport ^:target (fn [state k t] (-> state
-                                          (teleport k t)
-                                          (remove-item k :scroll-teleport)))
-            })
+                                                          (teleport k t)
+                                                          (remove-item k :scroll-teleport)))})
 
 (defn use-item! [entity-key item-key target-info]
   (let [f (get items item-key)]
@@ -151,17 +162,18 @@
     (swap! world-state #(-> %
                         ;;add boxes to the map and update the world state
                             (assoc :grid (insert-boxes grid box-keys))
-                        ;;give each starting entity a location (:coords key) and random facing (:delta key)
+                        ;;give each starting entity a location (:coords key) and random facing
                         ;;  an entity is a k-v pair where each v is a hashmap
                             (assoc :entities
-                                   (into {} (map (fn [[k v] x] [k (assoc v :coords x :delta (rand-nth dirs))])
+                                   (into {} (map (fn [[k v] x] [k (assoc v :coords x :facing (rand-int (count dirs)))])
                                                  starting-entities starting-coords)))
                         ;;update world state with location of ananas
                             (assoc :ananas (first box-keys))))
     ;; compute entities' fov based on starting info
     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
     (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
-    ))
+    ;; initial flow-field to player
+    (update-player-field! @world-state)))
 
 ;; fov computation: takes an entity record
 ;; multimehtod dispatch based on :fov-fn
@@ -175,24 +187,21 @@
         {:keys [grid]} @world-state
         ;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
         ;; rot-js FOV needs a callback to determine if a cell is transparent
-        FOV-P (rot/FOV.PreciseShadowcasting. #(contains? grid [%1 %2]))
-        ]
+        FOV-P (rot/FOV.PreciseShadowcasting. #(contains? grid [%1 %2]))]
     ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
     (.compute FOV-P x y vision #(swap! data-ref assoc! [%1 %2] %4))
     (persistent! @data-ref)))
 
-(defmethod compute-fov :fov-90 [{[x y] :coords vision :vision delta :delta}]
+(defmethod compute-fov :fov-90 [{[x y] :coords vision :vision facing :facing}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
   ;; [does making a vector inside an atom transient do anything?]
   (let [data-ref (atom (transient {}))
-        dir (.indexOf dirs delta)
         {:keys [grid]} @world-state
         ;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
         ;; rot-js FOV needs a callback to determine if a cell is transparent
-        FOV-R (rot/FOV.RecursiveShadowcasting. #(contains? grid [%1 %2]))
-        ]
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(contains? grid [%1 %2]))]
     ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
-    (.compute90 FOV-R x y vision dir #(swap! data-ref assoc! [%1 %2] %4))
+    (.compute90 FOV-R x y vision facing #(swap! data-ref assoc! [%1 %2] %4))
     (persistent! @data-ref)))
 
 ;;for updating world visibility info based on given fov data
@@ -203,78 +212,121 @@
 
 ;; start and destination are coord pairs
 ;;   topo = # of movement directions
-(defn- compute-path [[start-x start-y] [dest-x dest-y] topo]
-  (let [{:keys [grid]} @world-state
+#_(defn- compute-path [[start-x start-y] [dest-x dest-y] topo]
+    (let [{:keys [grid]} @world-state
         ;; rot-js pathfinder needs a callback fn to determine if a cell is passable
-        astar (rot/Path.AStar. dest-x dest-y #(contains? grid [%1 %2]) #js{:topology topo})
+          astar (rot/Path.AStar. dest-x dest-y #(contains? grid [%1 %2]) #js{:topology topo})
         ;; create a temporary mutable ref for rot-js pathfinder to use
         ;;  [does making a vector inside an atom transient do anything?]
-        path-ref (atom (transient []))]
+          path-ref (atom (transient []))]
     ;; rot-js pathfinder builds a path using a callback fn to mutate an object
-    (.compute astar start-x start-y #(swap! path-ref conj! [%1 %2]))
+      (.compute astar start-x start-y #(swap! path-ref conj! [%1 %2]))
     ;; return an ordinary clj vector
-    (persistent! @path-ref)))
+      (persistent! @path-ref)))
 
 ;; mutate the :coords of the provided entity within world-state
 ;; path is a vector of coordinate pairs
 ;;   rot-js pathfinder includes the starting point as the first item in the path
 ;; returns remanining path length
-(defn- follow-path! [entity-key [start-coords next-step & rest-of-path]]
-  (if next-step
+#_(defn- follow-path! [entity-key [start-coords next-step & rest-of-path]]
+    (if next-step
     ;;save the change from previous coordinates
-    (let [delta (mapv - next-step (get-in @world-state [:entities entity-key :coords]))]
+      (let [delta (mapv - next-step (get-in @world-state [:entities entity-key :coords]))]
       ;;update coordinates and coordinate change
-      (swap! world-state update-in [:entities entity-key]
-             assoc :coords next-step :delta delta)
+        (swap! world-state update-in [:entities entity-key]
+               assoc :coords next-step :delta delta)
       ;;update fov using new info
       ;;TODO put this in a general "move" fn
-      (let [e (get-entity @world-state entity-key)]
-        (swap! world-state assoc-in [:entities entity-key :fov] (compute-fov e))
+        (let [e (get-entity @world-state entity-key)]
+          (swap! world-state assoc-in [:entities entity-key :fov] (compute-fov e))
         ;;return result
-        {:path-length (count rest-of-path)
-         :move next-step
-         :dt (* (:move-time e)
-                (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} delta) (:diag e) 1.0))}))
+          {:path-length (count rest-of-path)
+           :move next-step
+           :dt (* (:move-time e)
+                  (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} delta) (:diag e) 1.0))}))
     ;;else entity is already at end of path
-    {:path-length 0 :dt 0}
+      {:path-length 0 :dt 0}))
+
+;; return entity with updated info
+(defn move-entity [e coords]
+  (let [delta (mapv - coords (:coords e))
+        idx-delta (.indexOf dirs delta)
+        e' (assoc e :coords coords :delta delta
+                  ;;if delta is in dirs, change facing
+                  :facing (if (contains? dirs idx-delta) idx-delta (:facing e)))]
+    ;;return record with updated fov
+    (assoc e' :fov (compute-fov e'))))
+
+;; calcualtes time taken by entity's last move
+(defn- move-time [e]
+  (* (:move-time e)
+     (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} (:delta e)) (:diag e) 1.0)))
+
+(defn- move-random! [entity-key topo]
+  (let [s @world-state
+        neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
+        coords (get-in s [:entities entity-key :coords])]
+    (when-let [next-step (rand-nth (neigh-fn (:grid s) coords))]
+      (let [s' (swap! world-state
+                      update-in [:entities entity-key] move-entity next-step)]
+        ;;return result (using get-entity for entity with effects)
+        {:wander next-step :dt (move-time (get-entity s' entity-key))}
+        ))))
+
+(defn- follow-field! [entity-key field-key topo]
+  (let [neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
+        field (get @flow-fields field-key)
+        coords (get-in @world-state [:entities entity-key :coords])]
+    ;;find the lowest-valued entry in field among neighbors of coords
+    ;;if coords have no neightbors in field, return nil
+    (when-let [next-step (apply min-key field (neigh-fn field coords))]
+      ;; check if entity is already at field minimum
+      (if (and (get field coords) (< (get field coords) (get field next-step)))
+        {:path-length 0 :dt 0}
+      ;; else update state
+        (let [s' (swap! world-state
+                        update-in [:entities entity-key] move-entity next-step)]
+          ;;return result (using get-entity for entity with effects)
+          {:path-length (get field next-step) 
+           :move next-step 
+           :dt (move-time (get-entity s' entity-key))})
+        ))
     ))
 
 ;; entity behavior: move towards target entity
 ;;   modifies entity coords in world state
 ;;   returns result of follow-path!
+#_(defn chase! [entity-key target-key topology]
+    (let [s @world-state
+          e-coords (get-in s [:entities entity-key :coords])
+          t-coords (get-in s [:entities target-key :coords])]
+      (follow-path! entity-key (compute-path e-coords t-coords topology))))
 (defn chase! [entity-key target-key topology]
-  (let [s @world-state
-        e-coords (get-in s [:entities entity-key :coords])
-        t-coords (get-in s [:entities target-key :coords])]
-    (follow-path! entity-key (compute-path e-coords t-coords topology))))
+  (or (follow-field! entity-key target-key topology)
+      (move-random! entity-key topology)))
+
 
 ;; moves player in a given grid direction
 ;;   updates world state
 ;;   returns result if player was moved, otherwise nil
-;; TODO - some inefficiency in this fn
 (defn move-player! [d]
   (let [s @world-state
-        delta (dirs d)
-        ;; mapv + adds two vectors
-        new-coords (mapv + (get-in s [:entities :player :coords]) delta)]
+        player-info (get-in s [:entities :player])
+        new-coords (mapv + (:coords player-info) (dirs d))]
     ;;update state only if new coords are on the grid
     (when (contains? (:grid s) new-coords)
-      ;;update with new coords and coord change
-      (swap! world-state update-in [:entities :player] assoc :coords new-coords :delta delta)
-      ;;update fov using new info
-      ;;and update world visbility based on fov
-      ;;TODO put this in a general "move" fn
-      (let [e (get-entity @world-state :player)
-            fov (compute-fov e)]
-        (swap! world-state #(-> %
-                                (assoc-in [:entities :player :fov] fov)
-                                (update-vis fov)
-                                ))
-        ;;return move info
-        {:move new-coords
-         :dt (* (:move-time e)
-                (if (get #{[1 1] [-1 -1] [1 -1] [-1 1]} delta) (:diag e) 1.0))})
-      )))
+      (let [updated-info (move-entity player-info new-coords)
+            ;; update player info and world vis map
+            s' (swap! world-state
+                      #(-> %
+                           (assoc-in [:entities :player] updated-info)
+                           (update-vis (:fov updated-info))))]
+        ;;player coords changed, so update flow field
+        (update-player-field! s')
+        ;;return move info, using entity with effects applied
+        {:move new-coords :dt (move-time (get-entity s' :player))}
+        ))
+    ))
 
 ;; if the player is on a closed box, open it and check for ananas
 ;;   returns box contents if a box was opened, otherwise nil

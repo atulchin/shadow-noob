@@ -18,3 +18,47 @@
 (defn sample [n coll]
   (take n (shuffle coll)))
 
+(defn neigh4 [grid coords]
+  (filter grid (map #(mapv + coords %) [[0 1] [1 0] [0 -1] [-1 0]])))
+
+(defn neigh8 [grid coords]
+  (filter grid (map #(mapv + coords %) [[0 1] [1 0] [0 -1] [-1 0]
+                                        [1 -1] [1 1] [-1 -1] [-1 1]])))
+
+;;this is a tricolor graph-traversal algo
+;;  breadth-first because using FIFO queue
+;;  white = undiscovered: not marked, not in queue
+;;  gray = frontier: marked but still in queue
+;;  black = done; marked and no longer in queue
+(defn breadth-first [node-map init-set neigh-fn max-dist]
+  ;;start with intial (root) nodes marked and in the queue (starting frontier)
+  (loop [todo (into #queue[] init-set)
+         ;;inital nodes are marked with a value of 0
+         marked (transient (zipmap init-set (repeat 0)))
+         unmarked (transient (apply disj (set (keys node-map)) init-set))
+         dist 0]
+    (if (or (> dist max-dist) (empty? todo))
+      (persistent! marked) ;;done
+      ;; the queue is immutable, so peek and pop are really like first and rest
+      (let [curr (peek todo) ;; the first node in the todo queue
+            ;; all its unmarked (undiscovered) neighbors:
+            unmar-neigh (neigh-fn unmarked curr)
+            ;; they get value + 1
+            new-val (inc (get marked curr))]
+        ;;put all unmarked neighbors in todo and mark them (new frontier)
+        ;;(the first node in todo -- already marked -- is removed)
+        (recur (into (pop todo) unmar-neigh) 
+               (reduce #(assoc! %1 %2 new-val) marked unmar-neigh)
+               (reduce disj! unmarked unmar-neigh)
+               new-val
+               )))))
+
+#_(let [g (zipmap (for [x (range 100) y (range 100)] [x y]) (repeat 1))]
+    (time (let  
+            [f (breadth-first g 
+                           #{[0 0] [99 99]}
+                           neigh4
+                           30)]
+            nil
+            )))
+

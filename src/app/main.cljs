@@ -361,11 +361,6 @@
 (defn quit-command []
   {:end-game true})
 
-;; calculates drawing boundaries when map grid is larger than screen
-(defn calc-breakpoints [[x y] [a b]]
-  {:x (map #(+ (quot (rem x a) 2) %) (map #(* % a) (range (inc (quot x a)))))
-   :y (map #(+ (quot (rem y b) 2) %) (map #(* % b) (range (inc (quot y b)))))})
-
 (defn new-game! []
   ;; if already running, send quit command to turn-loop
   (when (:running @db) (put! control-chan quit-command))
@@ -381,7 +376,7 @@
   (world/init-grid! (:map-dims @db))
   ;;update drawing boundaries
   ;;TODO - move this and map creation to a separate fn
-  (draw/set-breakpts! (calc-breakpoints (:map-dims @db) (:screen-dims @db)))
+  (draw/set-breakpts! (draw/calc-breakpoints (:map-dims @db) (:screen-dims @db)))
   ;;start the game
   (init-turn-loop))
 
