@@ -30,7 +30,7 @@
 ;;  white = undiscovered: not marked, not in queue
 ;;  gray = frontier: marked but still in queue
 ;;  black = done; marked and no longer in queue
-(defn breadth-first [node-map init-set neigh-fn max-dist]
+(defn breadth-first [init-set node-map neigh-fn max-dist]
   ;;start with intial (root) nodes marked and in the queue (starting frontier)
   (loop [todo (into #queue[] init-set)
          ;;inital nodes are marked with a value of 0
@@ -55,10 +55,11 @@
 
 #_(let [g (zipmap (for [x (range 100) y (range 100)] [x y]) (repeat 1))]
     (time (let  
-            [f (breadth-first g 
-                           #{[0 0] [99 99]}
-                           neigh4
-                           30)]
+            [f (breadth-first
+                #{[0 0] [99 99]}
+                g
+                neigh4
+                30)]
             nil
             )))
 

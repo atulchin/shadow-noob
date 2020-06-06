@@ -185,6 +185,22 @@
       (draw-entity d-context e)
       )))
 
+;; draws grid and entities
+;;   in the "visible" area of the world grid only
+(defn draw-all [context-map world-state focal-coords]
+  ;;update drawing area based on pre-calculated breakpoints
+  (let [d-context (assoc context-map :grid-start
+                         (get-grid-start (:breakpoints context-map) focal-coords))
+        visible-entities (vals (:entities world-state))]
+    ;;draw previously seen areas first
+    (draw-seen d-context (:grid world-state) (set (keys (:grid world-state))))
+    ;;then draw over those with currently visible area
+    (draw-vis-grid d-context (:grid world-state) (zipmap (keys (:grid world-state))
+                                                         (repeat 1)))
+    ;;draw entities whose coords are in the visible area
+    (doseq [e visible-entities]
+      (draw-entity d-context e))))
+
 ;; draw-element multimethod
 ;;   draws different things depending on :type key
 (defmulti draw-element (fn [elem focused? d-context] (:type elem)))
@@ -193,7 +209,9 @@
 ;;   (element's :data key is a function that returns it)
 (defmethod draw-element :grid [{:keys [data]} _ d-context]
   (let [{:keys [world-state focal-coords]} (data)]
-    (draw-visible d-context world-state focal-coords)))
+    (draw-visible d-context world-state focal-coords)
+    ;(draw-all d-context world-state focal-coords)
+    ))
 
 ;; :type :button draws a text button
 ;;   element's :data key contains a function

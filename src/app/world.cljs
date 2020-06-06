@@ -49,8 +49,8 @@
 
 (defn update-player-field! [state]
   (swap! flow-fields assoc :player
-            (utils/breadth-first (:grid state)
-                                 #{(get-in state [:entities :player :coords])}
+            (utils/breadth-first #{(get-in state [:entities :player :coords])}
+                                 (:grid state)
                                  utils/neigh8
                                  30)))
 
@@ -167,13 +167,20 @@
                             (assoc :entities
                                    (into {} (map (fn [[k v] x] [k (assoc v :coords x :facing (rand-int (count dirs)))])
                                                  starting-entities starting-coords)))
-                        ;;update world state with location of ananas
-                            (assoc :ananas (first box-keys))))
+                        ;;update world state with location of boxes and ananas
+                            (assoc :boxes (vec box-keys) :ananas (first box-keys))))
     ;; compute entities' fov based on starting info
     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
     (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
     ;; initial flow-field to player
-    (update-player-field! @world-state)))
+    (update-player-field! @world-state)
+    ;; make a flow field for each box
+    (swap! flow-fields merge
+           (reduce
+            #(assoc %1 %2 (utils/breadth-first #{%2} grid utils/neigh4 1000))
+            {}
+            box-keys))
+    ))
 
 ;; fov computation: takes an entity record
 ;; multimehtod dispatch based on :fov-fn
@@ -273,9 +280,8 @@
         {:wander next-step :dt (move-time (get-entity s' entity-key))}
         ))))
 
-(defn- follow-field! [entity-key field-key topo]
+(defn- follow-field! [entity-key field topo]
   (let [neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
-        field (get @flow-fields field-key)
         coords (get-in @world-state [:entities entity-key :coords])]
     ;;find the lowest-valued entry in field among neighbors of coords
     ;;if coords have no neightbors in field, return nil
@@ -293,16 +299,43 @@
         ))
     ))
 
-;; entity behavior: move towards target entity
-;;   modifies entity coords in world state
-;;   returns result of follow-path!
+(defn- patrol-boxes! [entity-key topo]
+  (let [s @world-state
+        f @flow-fields
+        e (get-in s [:entities entity-key])
+        coords (:coords e)
+        neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
+        ;;if entity's to do list is empty, get all boxes from world
+        box-todo (or (seq (:box-todo e)) (:boxes s))
+        ;;add together all fields of boxes on to do list
+        field (get f (first box-todo))]
+    ;; TODO - generalize the follow-field function
+    (when-let [next-step (apply min-key field (neigh-fn field coords))]
+      ;; check if entity is already at field minimum
+      (if (and (get field coords) (< (get field coords) (get field next-step)))
+        (do ;;remove box from to do list
+          (swap! world-state
+                 assoc-in [:entities entity-key :box-todo]
+                 (disj (set box-todo) coords))
+          {:checking-box coords :dt 10})
+      ;; else update coords
+        (let [s' (swap! world-state
+                        update-in [:entities entity-key] move-entity next-step)]
+          ;;return result (using get-entity for entity with effects)
+          {:patrolling (get field next-step)
+           :move next-step
+           :dt (move-time (get-entity s' entity-key))})))
+    ))
+
+
 #_(defn chase! [entity-key target-key topology]
     (let [s @world-state
           e-coords (get-in s [:entities entity-key :coords])
           t-coords (get-in s [:entities target-key :coords])]
       (follow-path! entity-key (compute-path e-coords t-coords topology))))
 (defn chase! [entity-key target-key topology]
-  (or (follow-field! entity-key target-key topology)
+  (or (follow-field! entity-key (get @flow-fields target-key) topology)
+      (patrol-boxes! entity-key topology)
       (move-random! entity-key topology)))
 
 
