@@ -38,19 +38,27 @@
   (swap! context assoc :breakpoints m))
 
 ;; calculates drawing boundaries when map grid is larger than screen
-(defn calc-breakpoints [[x y] [a b]]
-  #_{:x (map #(+ (quot (rem x a) 2) %) (map #(* % a) (range (inc (quot x a)))))
-   :y (map #(+ (quot (rem y b) 2) %) (map #(* % b) (range (inc (quot y b)))))}
-  {:x (dec (quot a 2)) :y (dec (quot b 2))}
-  )
+(defn calc-breakpoints-shift [[x y] [a b]]
+  {:x (map #(+ (quot (rem x a) 2) %) (map #(* % a) (range (inc (quot x a)))))
+   :y (map #(+ (quot (rem y b) 2) %) (map #(* % b) (range (inc (quot y b)))))})
+
+;; no breakpoints, just center view
+(defn calc-breakpoints-center [_ [a b]]
+  {:x (dec (quot a 2)) :y (dec (quot b 2))})
+
+(def calc-breakpoints calc-breakpoints-shift)
 
 ;;returns max breakpoints less than focal coords
-(defn get-grid-start [breaks [i j]]
-  #_(let [xs (filter #(<= % i) (:x breaks))
+(defn get-grid-start-shift [breaks [i j]]
+  (let [xs (filter #(<= % i) (:x breaks))
         ys (filter #(<= % j) (:y breaks))]
-    [(or (apply max xs) 0) (or (apply max ys) 0)])
-  [(- i (:x breaks)) (- j (:y breaks))]
-  )
+    [(or (apply max xs) 0) (or (apply max ys) 0)]))
+
+;; just centers the view
+(defn get-grid-start-center [breaks [i j]]
+  [(- i (:x breaks)) (- j (:y breaks))])
+
+(def get-grid-start get-grid-start-shift)
 
 ;;convert grid coords to screen coords
 (defn screen-coords [grid-coords zero-coords]
@@ -209,8 +217,8 @@
 ;;   (element's :data key is a function that returns it)
 (defmethod draw-element :grid [{:keys [data]} _ d-context]
   (let [{:keys [world-state focal-coords]} (data)]
-    (draw-visible d-context world-state focal-coords)
-    ;(draw-all d-context world-state focal-coords)
+    ;(draw-visible d-context world-state focal-coords)
+    (draw-all d-context world-state focal-coords)
     ))
 
 ;; :type :button draws a text button

@@ -62,7 +62,7 @@
                    :world-ref world-state
                    :keychan dialog-chan
                    :focused [:start-menu 0] :background [] :foreground []
-                   :map-dims [100 70] :screen-dims [60 40] :target [0 0]
+                   :map-dims [60 40] :screen-dims [60 40] :target [0 0]
                    :options {} :log []
                    :running false}))
 

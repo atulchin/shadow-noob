@@ -52,7 +52,7 @@
             (utils/breadth-first #{(get-in state [:entities :player :coords])}
                                  (:grid state)
                                  utils/neigh8
-                                 30)))
+                                 10)))
 
 ;; effects that can be applied to entities
 ;;  format is [:key updating-fn]
@@ -307,8 +307,8 @@
         neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
         ;;if entity's to do list is empty, get all boxes from world
         box-todo (or (seq (:box-todo e)) (:boxes s))
-        ;;add together all fields of boxes on to do list
-        field (get f (first box-todo))]
+        ;;min all fields of boxes on to do list
+        field (reduce #(merge-with min %1 (get f %2)) {} box-todo)]
     ;; TODO - generalize the follow-field function
     (when-let [next-step (apply min-key field (neigh-fn field coords))]
       ;; check if entity is already at field minimum
