@@ -19,13 +19,21 @@
                         }))
 
 (def defaults {:tilemap {"@" (mapv * GRAB-DIMS [25 0])
-                           "." (mapv * GRAB-DIMS [11 0])
-                           "o" (mapv * GRAB-DIMS [10 6])
-                           "u" (mapv * GRAB-DIMS [11 6])
-                           "a" (mapv * GRAB-DIMS [32 10])
-                           "P" (mapv * GRAB-DIMS [28 4])}
+                         "." (mapv * GRAB-DIMS [11 0])
+                         "," (mapv * GRAB-DIMS [0 2])
+                         " " (mapv * GRAB-DIMS [5 0])
+                         "#" (mapv * GRAB-DIMS [13 16])
+                         "`" (mapv * GRAB-DIMS [19 0])
+                         "o" (mapv * GRAB-DIMS [10 6])
+                         "u" (mapv * GRAB-DIMS [11 6])
+                         "a" (mapv * GRAB-DIMS [32 10])
+                         "P" (mapv * GRAB-DIMS [28 4])}
                  :icons {:player "@"
-                         :empty-grid "."
+                         :floor "."
+                         :grass ","
+                         :empty " "
+                         :wall "#"
+                         :wall-s "`"
                          :closed-box "o"
                          :open-box "u"
                          :ananas "a"
@@ -133,33 +141,20 @@
       )))
 
 ;;draws a named object to xy coords contained in k
-(defn- draw-coords [d-context [k v]]
+(defn- draw-coords [d-context clear? [k v]]
   (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
         xy (screen-coords k grid-start)
         sxy (get tilemap (get icons v))]
-    ;; clear first
-    (clear-tile ctx xy TILE-DIMS)
+    (when clear? (clear-tile ctx xy TILE-DIMS))
     (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
     ))
 
 ;;draws a map of key-value pairs where each key is [x y] coords
 ;;  each value is a keyword
 ;;  doseq iterates through k-v pairs
-(defn- draw-mkvs [d-context mkvs]
+(defn- draw-mkvs [d-context clear? mkvs]
   (doseq [m mkvs]
-    (draw-coords d-context m)))
-
-;;limits drawing to the coords present in visibility map
-(defn- draw-vis-grid [d-context full-grid vismap]
-  (let [mkvs (select-keys full-grid (keys vismap))]
-    (draw-mkvs d-context mkvs)
-    (draw-shadow d-context vismap)))
-
-;;draws previously visible coords (listed in seen-set) overlaid with shadow
-(defn- draw-seen [d-context full-grid seen-set]
-  (let [mkvs (select-keys full-grid seen-set)]
-    (draw-mkvs d-context mkvs)
-    (draw-dark d-context seen-set)))
+    (draw-coords d-context clear? m)))
 
 ;; takes entity val
 (defn- draw-entity [d-context {:keys [id coords fov]}]
@@ -182,32 +177,25 @@
   ;;update drawing area based on pre-calculated breakpoints
   (let [d-context (assoc context-map :grid-start 
                          (get-grid-start (:breakpoints context-map) focal-coords))
-        visible-entities (filter #(contains? (:visible world-state) (:coords %))
+        seen-set (:seen world-state)
+        vismap (:visible world-state)
+        visible-entities (filter #(contains? vismap (:coords %))
                                  (vals (:entities world-state)))]
+    
     ;;draw previously seen areas first
-    (draw-seen d-context (:grid world-state) (:seen world-state))
+    (draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
+    (draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
+    (draw-dark d-context seen-set)
+
     ;;then draw over those with currently visible area
-    (draw-vis-grid d-context (:grid world-state) (:visible world-state))
+    (draw-mkvs d-context true (select-keys (:grid world-state) (keys vismap)))
+    (draw-mkvs d-context false (select-keys (:decor world-state) (keys vismap)))
+    (draw-shadow d-context vismap)
+
     ;;draw entities whose coords are in the visible area
     (doseq [e visible-entities]
       (draw-entity d-context e)
       )))
-
-;; draws grid and entities
-;;   in the "visible" area of the world grid only
-(defn draw-all [context-map world-state focal-coords]
-  ;;update drawing area based on pre-calculated breakpoints
-  (let [d-context (assoc context-map :grid-start
-                         (get-grid-start (:breakpoints context-map) focal-coords))
-        visible-entities (vals (:entities world-state))]
-    ;;draw previously seen areas first
-    (draw-seen d-context (:grid world-state) (set (keys (:grid world-state))))
-    ;;then draw over those with currently visible area
-    (draw-vis-grid d-context (:grid world-state) (zipmap (keys (:grid world-state))
-                                                         (repeat 1)))
-    ;;draw entities whose coords are in the visible area
-    (doseq [e visible-entities]
-      (draw-entity d-context e))))
 
 ;; draw-element multimethod
 ;;   draws different things depending on :type key
@@ -217,8 +205,14 @@
 ;;   (element's :data key is a function that returns it)
 (defmethod draw-element :grid [{:keys [data]} _ d-context]
   (let [{:keys [world-state focal-coords]} (data)]
-    ;(draw-visible d-context world-state focal-coords)
-    (draw-all d-context world-state focal-coords)
+    (draw-visible d-context world-state focal-coords)
+    #_(draw-visible d-context 
+                  (assoc world-state 
+                         :seen #{}
+                         :visible (zipmap 
+                                   (keys (merge (:decor world-state) (:grid world-state)))
+                                   (repeat 1)))
+                  focal-coords)
     ))
 
 ;; :type :button draws a text button

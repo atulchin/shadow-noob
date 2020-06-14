@@ -134,41 +134,60 @@
 ;;   this generates and returns that fn
 (defn- digger-callback [grid-ref]
   (fn [x y v]
-    (if (= v 1)
-      nil ;;1 = wall, don't store walls
-      (swap! grid-ref assoc [x y] :empty-grid)))) ;;store only empty spaces
+    (if (= v 1) ;;1 = wall
+      (swap! grid-ref #(-> %
+                           (assoc-in [:decor [x y]] :wall)
+                           (update :grid dissoc [x y])
+                           ))
+      ;;store only passable spaces in :grid
+      (swap! grid-ref assoc-in [:grid [x y]] :floor)))) 
 
 ;; create a temporary mutable ref for the rot-js map generator to use
 ;;   then return an ordinary clj hashmap
-(defn- generate-grid [rot-digger]
-  (let [grid-ref (atom {})]
+(defn- generate-grid [[w h]]
+  (let [rot-digger (rot/Map.Digger. w h)
+        ;noise (rot/Noise.Simplex.)
+        grid-ref #_(atom {:grid {} :decor {}})
+        (atom {:decor {}
+               :grid {} #_(into {} (for [x (range (.-_width rot-digger))
+                                    y (range (.-_height rot-digger))]
+                                {[x y] 
+                                 (if (< 0.6 (.get noise (/ x 3) (/ y 3))) :grass :empty)
+                                 }))
+               })]
     (.create rot-digger (digger-callback grid-ref))
-    (into {} @grid-ref)))
-
-(defn- insert-boxes [grid ks]
-  (assoc-multi grid ks :closed-box))
+    ;(.create rot-digger)
+    ;;for rooms, .create includes walls
+    ;(doseq [r (.getRooms rot-digger)] (.create r (digger-callback grid-ref)))
+    ;;but not for corridors
+    ;(doseq [r (.getCorridors rot-digger)] (.create r (digger-callback grid-ref)))
+    ;;wall shadows:
+    (swap! grid-ref update :decor
+           (fn [m] (merge
+                    (reduce #(assoc %1 (mapv + %2 [0 1]) :wall-s) {} (keys m))
+                    m)))
+    @grid-ref
+    ))
 
 ;; create a starting map
 (defn init-grid! [[w h]]
-  (let [grid (generate-grid (rot/Map.Digger. w h)) ;;initial map
+  (let [{:keys [grid decor]} (generate-grid [w h]) ;;initial map
         grid-keys (keys grid)
         box-keys (sample 5 grid-keys)  ;;random locations for boxes
         free-cells (set/difference (set grid-keys) (set box-keys)) ;;squares without boxes
         starting-entities (:entities @world-state)
         starting-coords (sample (count starting-entities) free-cells) ;;a vector of random starting locations
         ]
-    ;; threading macro (->) creates a conjugate function
-    ;; -- avoids having multiple swap!s in a row
-    (swap! world-state #(-> %
-                        ;;add boxes to the map and update the world state
-                            (assoc :grid (insert-boxes grid box-keys))
-                        ;;give each starting entity a location (:coords key) and random facing
-                        ;;  an entity is a k-v pair where each v is a hashmap
-                            (assoc :entities
-                                   (into {} (map (fn [[k v] x] [k (assoc v :coords x :facing (rand-int (count dirs)))])
-                                                 starting-entities starting-coords)))
-                        ;;update world state with location of boxes and ananas
-                            (assoc :boxes (vec box-keys) :ananas (first box-keys))))
+    (swap! world-state assoc
+           :decor decor
+           ;;add boxes to grid and store in :grid of world-state
+           :grid (assoc-multi grid box-keys :closed-box)
+           ;;give each starting entity a location (:coords key) and random facing
+           ;;  an entity is a k-v pair where each v is a hashmap
+           :entities (into {} (map (fn [[k v] x] [k (assoc v :coords x :facing (rand-int (count dirs)))])
+                                   starting-entities starting-coords))
+           ;;store location of boxes and ananas
+           :boxes (vec box-keys) :ananas (first box-keys))
     ;; compute entities' fov based on starting info
     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
     (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
@@ -179,8 +198,7 @@
            (reduce
             #(assoc %1 %2 (utils/breadth-first #{%2} grid utils/neigh4 1000))
             {}
-            box-keys))
-    ))
+            box-keys))))
 
 ;; fov computation: takes an entity record
 ;; multimehtod dispatch based on :fov-fn
@@ -194,7 +212,9 @@
         {:keys [grid]} @world-state
         ;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
         ;; rot-js FOV needs a callback to determine if a cell is transparent
-        FOV-P (rot/FOV.PreciseShadowcasting. #(contains? grid [%1 %2]))]
+        FOV-P (rot/FOV.PreciseShadowcasting. #(contains? grid [%1 %2]))
+        ;FOV-P (rot/FOV.RecursiveShadowcasting. #(contains? grid [%1 %2]))
+        ]
     ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
     (.compute FOV-P x y vision #(swap! data-ref assoc! [%1 %2] %4))
     (persistent! @data-ref)))
