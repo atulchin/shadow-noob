@@ -4,7 +4,6 @@
 
 ;; just functions for drawing to the display
 
-(def GRAB-DIMS [16 16])
 (def TILE-DIMS [24 24])
 
 ;; mutable drawing context
@@ -18,16 +17,19 @@
                         :breakpoints {:x [] :y []}
                         }))
 
-(def defaults {:tilemap {"@" (mapv * GRAB-DIMS [25 0])
-                         "." (mapv * GRAB-DIMS [11 0])
-                         "," (mapv * GRAB-DIMS [0 2])
-                         " " (mapv * GRAB-DIMS [5 0])
-                         "#" (mapv * GRAB-DIMS [13 16])
-                         "`" (mapv * GRAB-DIMS [19 0])
-                         "o" (mapv * GRAB-DIMS [10 6])
-                         "u" (mapv * GRAB-DIMS [11 6])
-                         "a" (mapv * GRAB-DIMS [32 10])
-                         "P" (mapv * GRAB-DIMS [28 4])}
+(def tiledefs [{:file "bitpack.png" :offsets [16 16] :grabdims [16 16]  :img nil}
+               {:file "roguelikeSheet.png" :offsets [17 17] :grabdims [16 16] :img nil}])
+
+(def defaults {:tilemap {"@" [0 [25 0]]
+                         "." [0 [11 0]]
+                         "," [0 [0 2]]
+                         " " [0 [5 0]]
+                         "#" [0 [13 16]]
+                         "`" [0 [19 0]]
+                         "o" [0 [10 6]]
+                         "u" [0 [11 6]]
+                         "a" [0 [32 10]]
+                         "P" [0 [28 4]]}
                  :icons {:player "@"
                          :floor "."
                          :grass ","
@@ -72,19 +74,30 @@
 (defn screen-coords [grid-coords zero-coords]
   (mapv * TILE-DIMS (mapv - grid-coords zero-coords)))
 
+
+(defn load-tiles [filename ch]
+  (let [tiles (.createElement js/document "img")]
+    ;; tiles .onload event sends signal to out channel
+    (set! (. tiles -onload) #(put! ch true))
+    (set! (. tiles -src) filename)
+    tiles))
+
 ;;set display options and add it to the document body
 (defn init-disp! [[w h]]
   ;;this fn can return before tiles are loaded
   ;;  return a channel that lets us know when tiles are ready to draw
-  (let [out (chan)
+  ;;  first, create one channel for each tile file:
+  (let [chs (mapv (fn [_] (chan)) tiledefs)
+        ;;then combine channels with async/map: 
+        ;;  returns a chan than can be read when all constituent chans are ready
+        out (a/map vector chs)
         canvas (.createElement js/document "canvas")
         ctx (.getContext canvas "2d")
-        tiles (.createElement js/document "img")
-        dims (mapv * TILE-DIMS [w h])]
+        dims (mapv * TILE-DIMS [w h])
+        tiles (mapv (fn [m ch]
+                      (assoc m :img (load-tiles (:file m) ch))) 
+                    tiledefs chs)]
 
-    ;; tiles .onload event sends signal to out channel
-    (set! (. tiles -onload) #(put! out true))
-    (set! (. tiles -src) "bitpack.png")
     (set! (. canvas -width) (first dims))
     (set! (. canvas -height) (second dims))
     (set! (. ctx -imageSmoothingEnabled) false)
@@ -144,9 +157,12 @@
 (defn- draw-coords [d-context clear? [k v]]
   (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
         xy (screen-coords k grid-start)
-        sxy (get tilemap (get icons v))]
+        [set-idx tile-coords] (get tilemap (get icons v))
+        {:keys [offsets grabdims img]} (get tiles set-idx)
+        sxy (mapv * offsets tile-coords)
+        ]
     (when clear? (clear-tile ctx xy TILE-DIMS))
-    (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
+    (draw-tile ctx img sxy grabdims xy TILE-DIMS)
     ))
 
 ;;draws a map of key-value pairs where each key is [x y] coords
@@ -160,8 +176,11 @@
 (defn- draw-entity [d-context {:keys [id coords fov]}]
   (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
         xy (screen-coords coords grid-start)
-        sxy (get tilemap (get icons id))]
-    (draw-tile ctx tiles sxy GRAB-DIMS xy TILE-DIMS)
+        [set-idx tile-coords] (get tilemap (get icons id))
+        {:keys [offsets grabdims img]} (get tiles set-idx)
+        sxy (mapv * offsets tile-coords)
+        ]
+    (draw-tile ctx img sxy grabdims xy TILE-DIMS)
     ;;TODO: make a separate function that decides when to light up field-of-view
     (when-not (= id :player) (draw-glow d-context fov))
     ))
