@@ -224,8 +224,8 @@
 ;;   (element's :data key is a function that returns it)
 (defmethod draw-element :grid [{:keys [data]} _ d-context]
   (let [{:keys [world-state focal-coords]} (data)]
-    (draw-visible d-context world-state focal-coords)
-    #_(draw-visible d-context 
+    ;(draw-visible d-context world-state focal-coords)
+    (draw-visible d-context 
                   (assoc world-state 
                          :seen #{}
                          :visible (zipmap 

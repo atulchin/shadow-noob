@@ -28,12 +28,11 @@
                                     :move-time 10 :diag 2.0
                                     :action #(chase! :pedro :player 4)}}
                  :time 0
-                 :effects #{}
-                 })
+                 :effects #{}})
 
 (defonce flow-fields (atom {}))
 
-(defn reset-state [] 
+(defn reset-state []
   (reset! flow-fields {})
   (reset! world-state init-state))
 
@@ -49,10 +48,10 @@
 
 (defn update-player-field! [state]
   (swap! flow-fields assoc :player
-            (utils/breadth-first #{(get-in state [:entities :player :coords])}
-                                 (:grid state)
-                                 utils/neigh8
-                                 10)))
+         (utils/breadth-first #{(get-in state [:entities :player :coords])}
+                              (:grid state)
+                              utils/neigh8
+                              10)))
 
 ;; effects that can be applied to entities
 ;;  format is [:key updating-fn]
@@ -104,8 +103,7 @@
         ;;update entity's fov
         (assoc-in [:entities t :fov] fov)
         ;;update player's vision
-        (update-vis player-fov))
-    ))
+        (update-vis player-fov))))
 
 ;; item values are functions of world-state, entity-key, and
 ;;   target-info (as returned by get-info)
@@ -137,37 +135,162 @@
     (if (= v 1) ;;1 = wall
       (swap! grid-ref #(-> %
                            (assoc-in [:decor [x y]] :wall)
-                           (update :grid dissoc [x y])
-                           ))
+                           (update :grid dissoc [x y])))
       ;;store only passable spaces in :grid
-      (swap! grid-ref assoc-in [:grid [x y]] :floor)))) 
+      (swap! grid-ref assoc-in [:grid [x y]] :floor))))
+
+
+
+(defmulti build-blocks (fn [pos key] key))
+(defmulti block-to-tiles (fn [pos key] key))
+
+(defmethod build-blocks :street-ns [pos _]
+  {(mapv + [0 -1] pos) (if (< (rand) 0.06) :intersection :street-ns)
+   (mapv + [0 1] pos) (if (< (rand) 0.06) :intersection :street-ns)
+   (mapv + [-1 0] pos) :sidewalk-e
+   (mapv + [1 0] pos) :sidewalk-w})
+
+(defmethod block-to-tiles :street-ns [pos _] {pos :floor})
+
+(defmethod build-blocks :street-we [pos _]
+  {(mapv + [0 -1] pos) :sidewalk-s
+   (mapv + [0 1] pos) :sidewalk-n
+   (mapv + [-1 0] pos) (if (< (rand) 0.02) :intersection :street-we)
+   (mapv + [1 0] pos) (if (< (rand) 0.02) :intersection :street-we)})
+
+(defmethod block-to-tiles :street-we [pos _] {pos :floor})
+
+(defmethod build-blocks :intersection [pos _]
+  {(mapv + [0 -1] pos) :street-ns
+   (mapv + [0 1] pos) :street-ns
+   (mapv + [-1 0] pos) :street-we
+   (mapv + [1 0] pos) :street-we})
+
+(defmethod block-to-tiles :intersection [pos _] {pos :floor})
+
+(defmethod build-blocks :sidewalk-n [pos _] {(mapv + [0 1] pos) :lot-n})
+(defmethod build-blocks :sidewalk-s [pos _] {(mapv + [0 -1] pos) :lot-s})
+(defmethod build-blocks :sidewalk-w [pos _] {(mapv + [1 0] pos) :lot-w})
+(defmethod build-blocks :sidewalk-e [pos _] {(mapv + [-1 0] pos) :lot-e})
+
+(defmethod block-to-tiles :sidewalk-n [pos _] {pos :grass})
+(defmethod block-to-tiles :sidewalk-s [pos _] {pos :grass})
+(defmethod block-to-tiles :sidewalk-w [pos _] {pos :grass})
+(defmethod block-to-tiles :sidewalk-e [pos _] {pos :grass})
+
+(defmethod build-blocks :lot-n [_ _] {})
+(defmethod build-blocks :lot-s [_ _] {})
+(defmethod build-blocks :lot-w [_ _] {})
+(defmethod build-blocks :lot-e [_ _] {})
+
+(defmethod block-to-tiles :lot-n [pos _] {pos :open-box})
+(defmethod block-to-tiles :lot-s [pos _] {pos :open-box})
+(defmethod block-to-tiles :lot-w [pos _] {pos :open-box})
+(defmethod block-to-tiles :lot-e [pos _] {pos :open-box})
+
+(defmulti split-zone #(:type %))
+
+(defmethod split-zone :v [{[x y] :coords [w h] :dims}]
+  (let [s (+ (quot w 4) (rand-int (quot w 2)))
+        ;;if v-block is narrow, make children that won't get horizontally split
+        child-w (if (< h 12) :lot-e :h)
+        child-e (if (< h 12) :lot-w :h)]
+    [{:type child-w :coords [x y] :dims [s h]}
+     {:type :r :coords [(+ s x) y] :dims [1 h]}
+     {:type child-e :coords [(+ s x 1) y] :dims [(- w s 1) h]}]
+    ))
+
+(defmethod split-zone :h [{[x y] :coords [w h] :dims}]
+  (let [s (+ (quot h 4) (rand-int (quot h 2)))
+        ;;if h-block is narrow, make children that won't get vertically split
+        child-n (if (< w 12) :lot-s :v)
+        child-s (if (< w 12) :lot-n :v)]
+    [{:type child-n :coords [x y] :dims [w s]}
+     {:type :r :coords [x (+ s y)] :dims [w 1]}
+     {:type child-s :coords [x (+ s y 1)] :dims [w (- h s 1)]}]
+    ))
+
+(defmulti zone-to-tiles #(:type %))
+(defmethod zone-to-tiles :v [_] nil)
+(defmethod zone-to-tiles :h [_] nil)
+(defmethod zone-to-tiles :r [{[x y] :coords [w h] :dims}]
+  (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :floor])))
+(defmethod zone-to-tiles :lot-n [{[x y] :coords [w h] :dims}]
+  (merge
+   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
+   (into {} (for [i (range x (+ x w))] [[i y] :grass]))
+   (into {} (for [i (range x (+ x w))] [[i (inc y)] :open-box]))
+   ))
+(defmethod zone-to-tiles :lot-s [{[x y] :coords [w h] :dims}]
+  (merge
+   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
+   (into {} (for [i (range x (+ x w))] [[i (+ y h -1)] :grass]))
+   (into {} (for [i (range x (+ x w))] [[i (+ y h -2)] :open-box]))
+   ))
+(defmethod zone-to-tiles :lot-w [{[x y] :coords [w h] :dims}]
+  (merge
+   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
+   (into {} (for [j (range y (+ y h))] [[x j] :grass]))
+   (into {} (for [j (range y (+ y h))] [[(inc x) j] :open-box]))
+   ))
+(defmethod zone-to-tiles :lot-e [{[x y] :coords [w h] :dims}]
+  (merge
+   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
+   (into {} (for [j (range y (+ y h))] [[(+ x w -1) j] :grass]))
+   (into {} (for [j (range y (+ y h))] [[(+ x w -2) j] :open-box]))
+   ))
+
+(defn- gen-zone-town [dims]
+  (tree-seq #(#{:v :h} (:type %))
+            #(split-zone %)
+            {:type :v :coords [0 0] :dims dims}))
+
+(defn- gen-block-town [w h]
+  (loop [town {}
+         new-blocks {[(quot w 2) (quot h 2)] :street-ns}]
+    (let [proposed-blocks (reduce
+                         ;;result of build-blocks is overwritten by previous results
+                           #(merge (build-blocks (key %2) (val %2)) %1) {} new-blocks)
+          allowed-keys (remove (fn [[x y]]
+                                 (or (get town [x y])
+                                     (< x 0) (< y 0) (> x w) (> y h)))
+                               (keys proposed-blocks))
+          allowed-blocks (select-keys proposed-blocks allowed-keys)]
+      (if (empty? allowed-keys)
+        (do (println (count town))
+            town)
+        (recur (into town allowed-blocks) allowed-blocks)))))
 
 ;; create a temporary mutable ref for the rot-js map generator to use
 ;;   then return an ordinary clj hashmap
 (defn- generate-grid [[w h]]
   (let [rot-digger (rot/Map.Digger. w h)
         ;noise (rot/Noise.Simplex.)
+        town (gen-zone-town [w h])
+        ;town (gen-block-town w h)
+        bg-grass (into {} (for [x (range w) y (range h)]
+                            [[x y]
+                            ;(if (< 0.6 (.get noise (/ x 3) (/ y 3))) :grass :empty)
+                             :empty
+                             ]))
         grid-ref #_(atom {:grid {} :decor {}})
         (atom {:decor {}
-               :grid {} #_(into {} (for [x (range (.-_width rot-digger))
-                                    y (range (.-_height rot-digger))]
-                                {[x y] 
-                                 (if (< 0.6 (.get noise (/ x 3) (/ y 3))) :grass :empty)
-                                 }))
+               :grid
+               (reduce #(merge (zone-to-tiles %2) %1) {} town)
+               ;(merge bg-grass (reduce #(into %1 (block-to-tiles (key %2) (val %2))) {} town))
                })]
-    (.create rot-digger (digger-callback grid-ref))
+    ;(.create rot-digger (digger-callback grid-ref))
     ;(.create rot-digger)
     ;;for rooms, .create includes walls
     ;(doseq [r (.getRooms rot-digger)] (.create r (digger-callback grid-ref)))
     ;;but not for corridors
     ;(doseq [r (.getCorridors rot-digger)] (.create r (digger-callback grid-ref)))
     ;;wall shadows:
-    (swap! grid-ref update :decor
-           (fn [m] (merge
-                    (reduce #(assoc %1 (mapv + %2 [0 1]) :wall-s) {} (keys m))
-                    m)))
-    @grid-ref
-    ))
+    #_(swap! grid-ref update :decor
+             (fn [m] (merge
+                      (reduce #(assoc %1 (mapv + %2 [0 1]) :wall-s) {} (keys m))
+                      m)))
+    @grid-ref))
 
 ;; create a starting map
 (defn init-grid! [[w h]]
@@ -297,8 +420,7 @@
       (let [s' (swap! world-state
                       update-in [:entities entity-key] move-entity next-step)]
         ;;return result (using get-entity for entity with effects)
-        {:wander next-step :dt (move-time (get-entity s' entity-key))}
-        ))))
+        {:wander next-step :dt (move-time (get-entity s' entity-key))}))))
 
 (defn- follow-field! [entity-key field topo]
   (let [neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
@@ -313,11 +435,9 @@
         (let [s' (swap! world-state
                         update-in [:entities entity-key] move-entity next-step)]
           ;;return result (using get-entity for entity with effects)
-          {:path-length (get field next-step) 
-           :move next-step 
-           :dt (move-time (get-entity s' entity-key))})
-        ))
-    ))
+          {:path-length (get field next-step)
+           :move next-step
+           :dt (move-time (get-entity s' entity-key))})))))
 
 (defn- patrol-boxes! [entity-key topo]
   (let [s @world-state
@@ -344,8 +464,7 @@
           ;;return result (using get-entity for entity with effects)
           {:patrolling (get field next-step)
            :move next-step
-           :dt (move-time (get-entity s' entity-key))})))
-    ))
+           :dt (move-time (get-entity s' entity-key))})))))
 
 
 #_(defn chase! [entity-key target-key topology]
@@ -377,9 +496,7 @@
         ;;player coords changed, so update flow field
         (update-player-field! s')
         ;;return move info, using entity with effects applied
-        {:move new-coords :dt (move-time (get-entity s' :player))}
-        ))
-    ))
+        {:move new-coords :dt (move-time (get-entity s' :player))}))))
 
 ;; if the player is on a closed box, open it and check for ananas
 ;;   returns box contents if a box was opened, otherwise nil
