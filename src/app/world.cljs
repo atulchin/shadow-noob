@@ -2,7 +2,8 @@
 (ns app.world
   (:require ["rot-js" :as rot]
             [clojure.set :as set]
-            [app.utils :as utils :refer [assoc-multi update-all sample]]))
+            [app.utils :as utils :refer 
+             [assoc-multi update-all sample merge2 mergef tmerge split-int]]))
 
 (declare chase! compute-fov update-vis)
 
@@ -20,7 +21,7 @@
                  :seen #{}
                  :visible {}
                  :entities {:player {:id :player :type :local-player
-                                     :fov-fn :fov-360 :vision 10
+                                     :fov-fn :fov-360 :vision 30
                                      :move-time 10 :diag 1.4
                                      :inv {:potion-speed 1 :scroll-teleport 2}}
                             :pedro {:id :pedro :type :npc
@@ -48,10 +49,10 @@
 
 (defn update-player-field! [state]
   (swap! flow-fields assoc :player
-         (utils/breadth-first #{(get-in state [:entities :player :coords])}
-                              (:grid state)
-                              utils/neigh8
-                              10)))
+         {} #_(utils/breadth-first #{(get-in state [:entities :player :coords])}
+                                   (:grid state)
+                                   utils/neigh8
+                                   10)))
 
 ;; effects that can be applied to entities
 ;;  format is [:key updating-fn]
@@ -139,145 +140,122 @@
       ;;store only passable spaces in :grid
       (swap! grid-ref assoc-in [:grid [x y]] :floor))))
 
+(defmulti split-zone :type)
 
-
-(defmulti build-blocks (fn [pos key] key))
-(defmulti block-to-tiles (fn [pos key] key))
-
-(defmethod build-blocks :street-ns [pos _]
-  {(mapv + [0 -1] pos) (if (< (rand) 0.06) :intersection :street-ns)
-   (mapv + [0 1] pos) (if (< (rand) 0.06) :intersection :street-ns)
-   (mapv + [-1 0] pos) :sidewalk-e
-   (mapv + [1 0] pos) :sidewalk-w})
-
-(defmethod block-to-tiles :street-ns [pos _] {pos :floor})
-
-(defmethod build-blocks :street-we [pos _]
-  {(mapv + [0 -1] pos) :sidewalk-s
-   (mapv + [0 1] pos) :sidewalk-n
-   (mapv + [-1 0] pos) (if (< (rand) 0.02) :intersection :street-we)
-   (mapv + [1 0] pos) (if (< (rand) 0.02) :intersection :street-we)})
-
-(defmethod block-to-tiles :street-we [pos _] {pos :floor})
-
-(defmethod build-blocks :intersection [pos _]
-  {(mapv + [0 -1] pos) :street-ns
-   (mapv + [0 1] pos) :street-ns
-   (mapv + [-1 0] pos) :street-we
-   (mapv + [1 0] pos) :street-we})
-
-(defmethod block-to-tiles :intersection [pos _] {pos :floor})
-
-(defmethod build-blocks :sidewalk-n [pos _] {(mapv + [0 1] pos) :lot-n})
-(defmethod build-blocks :sidewalk-s [pos _] {(mapv + [0 -1] pos) :lot-s})
-(defmethod build-blocks :sidewalk-w [pos _] {(mapv + [1 0] pos) :lot-w})
-(defmethod build-blocks :sidewalk-e [pos _] {(mapv + [-1 0] pos) :lot-e})
-
-(defmethod block-to-tiles :sidewalk-n [pos _] {pos :grass})
-(defmethod block-to-tiles :sidewalk-s [pos _] {pos :grass})
-(defmethod block-to-tiles :sidewalk-w [pos _] {pos :grass})
-(defmethod block-to-tiles :sidewalk-e [pos _] {pos :grass})
-
-(defmethod build-blocks :lot-n [_ _] {})
-(defmethod build-blocks :lot-s [_ _] {})
-(defmethod build-blocks :lot-w [_ _] {})
-(defmethod build-blocks :lot-e [_ _] {})
-
-(defmethod block-to-tiles :lot-n [pos _] {pos :open-box})
-(defmethod block-to-tiles :lot-s [pos _] {pos :open-box})
-(defmethod block-to-tiles :lot-w [pos _] {pos :open-box})
-(defmethod block-to-tiles :lot-e [pos _] {pos :open-box})
-
-(defmulti split-zone #(:type %))
+(def SPLIT-LIM 20)
+;(def SPLIT-LIM 40)
+(def LOT-W 4)
+;(def LOT-W 7)
+(def ROAD-W 2)
+;(def ROAD-W 4)
 
 (defmethod split-zone :v [{[x y] :coords [w h] :dims}]
   (let [s (+ (quot w 4) (rand-int (quot w 2)))
+        lim SPLIT-LIM
         ;;if v-block is narrow, make children that won't get horizontally split
-        child-w (if (< h 12) :lot-e :h)
-        child-e (if (< h 12) :lot-w :h)]
+        child-w (if (< h lim) :lot-e :h)
+        child-e (if (< h lim) :lot-w :h)
+        rw (min (max (inc (quot h 10)) ROAD-W) (* ROAD-W 2))]
     [{:type child-w :coords [x y] :dims [s h]}
-     {:type :r :coords [(+ s x) y] :dims [1 h]}
-     {:type child-e :coords [(+ s x 1) y] :dims [(- w s 1) h]}]
-    ))
+     {:type :r :coords [(+ s x) y] :dims [rw h]}
+     {:type child-e :coords [(+ s x rw) y] :dims [(- w s rw) h]}]))
 
 (defmethod split-zone :h [{[x y] :coords [w h] :dims}]
   (let [s (+ (quot h 4) (rand-int (quot h 2)))
+        lim SPLIT-LIM
         ;;if h-block is narrow, make children that won't get vertically split
-        child-n (if (< w 12) :lot-s :v)
-        child-s (if (< w 12) :lot-n :v)]
+        child-n (if (< w lim) :lot-s :v)
+        child-s (if (< w lim) :lot-n :v)
+        rw (min (max (inc (quot w 10)) ROAD-W) (* ROAD-W 2))]
     [{:type child-n :coords [x y] :dims [w s]}
-     {:type :r :coords [x (+ s y)] :dims [w 1]}
-     {:type child-s :coords [x (+ s y 1)] :dims [w (- h s 1)]}]
-    ))
+     {:type :r :coords [x (+ s y)] :dims [w rw]}
+     {:type child-s :coords [x (+ s y rw)] :dims [w (- h s rw)]}]))
 
-(defmulti zone-to-tiles #(:type %))
-(defmethod zone-to-tiles :v [_] nil)
-(defmethod zone-to-tiles :h [_] nil)
-(defmethod zone-to-tiles :r [{[x y] :coords [w h] :dims}]
-  (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :floor])))
-(defmethod zone-to-tiles :lot-n [{[x y] :coords [w h] :dims}]
-  (merge
-   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
-   (into {} (for [i (range x (+ x w))] [[i y] :grass]))
-   (into {} (for [i (range x (+ x w))] [[i (inc y)] :open-box]))
-   ))
-(defmethod zone-to-tiles :lot-s [{[x y] :coords [w h] :dims}]
-  (merge
-   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
-   (into {} (for [i (range x (+ x w))] [[i (+ y h -1)] :grass]))
-   (into {} (for [i (range x (+ x w))] [[i (+ y h -2)] :open-box]))
-   ))
-(defmethod zone-to-tiles :lot-w [{[x y] :coords [w h] :dims}]
-  (merge
-   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
-   (into {} (for [j (range y (+ y h))] [[x j] :grass]))
-   (into {} (for [j (range y (+ y h))] [[(inc x) j] :open-box]))
-   ))
-(defmethod zone-to-tiles :lot-e [{[x y] :coords [w h] :dims}]
-  (merge
-   (into {} (for [i (range x (+ x w)) j (range y (+ y h))] [[i j] :empty]))
-   (into {} (for [j (range y (+ y h))] [[(+ x w -1) j] :grass]))
-   (into {} (for [j (range y (+ y h))] [[(+ x w -2) j] :open-box]))
-   ))
+(defmethod split-zone :lot-s [{[x y] :coords [w h] :dims}]
+  (let [n (quot w LOT-W)
+        widths (split-int w n)
+        s-pts (into [0] (reductions + widths))]
+    (for [i (range n)]
+      {:type :plot-s :coords [(+ (s-pts i) x) y] :dims [(widths i) h]})))
+
+(defmethod split-zone :lot-n [{[x y] :coords [w h] :dims}]
+  (let [n (quot w LOT-W)
+        widths (split-int w n)
+        s-pts (into [0] (reductions + widths))]
+    (for [i (range n)]
+      {:type :plot-n :coords [(+ (s-pts i) x) y] :dims [(widths i) h]})))
+
+(defmethod split-zone :lot-w [{[x y] :coords [w h] :dims}]
+  (let [n (quot h LOT-W)
+        widths (split-int h n)
+        s-pts (into [0] (reductions + widths))]
+    (for [i (range n)]
+      {:type :plot-w :coords [x (+ (s-pts i) y)] :dims [w (widths i)]})))
+
+(defmethod split-zone :lot-e [{[x y] :coords [w h] :dims}]
+  (let [n (quot h LOT-W)
+        widths (split-int h n)
+        s-pts (into [0] (reductions + widths))]
+    (for [i (range n)]
+      {:type :plot-e :coords [x (+ (s-pts i) y)] :dims [w (widths i)]})))
+
+(defn fill-grid [v xs ys]
+  (persistent! (reduce conj! (transient {}) (for [x xs y ys] [[x y] v]))))
+
+(defmulti zone-to-tiles :type)
+(defmethod zone-to-tiles :default [_] nil)
+(defmethod zone-to-tiles :r [{:keys [coords dims]}]
+  (let [[x y] coords [w h] dims]
+    (fill-grid :floor (range x (+ x w)) (range y (+ y h)))
+    ))
+(defmethod zone-to-tiles :plot-n [{:keys [coords dims]}]
+  (let [[x y] coords [w h] dims]
+    (tmerge
+     (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
+     (fill-grid :grass (range (inc x) (+ x w -1)) [y])
+     (fill-grid :wall (range (inc x) (+ x w -1)) [(inc y)])
+     )))
+(defmethod zone-to-tiles :plot-s [{:keys [coords dims]}]
+  (let [[x y] coords [w h] dims]
+    (tmerge
+      (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
+      (fill-grid :grass (range (inc x) (+ x w -1)) [(+ y h -1)])
+      (fill-grid :wall (range (inc x) (+ x w -1)) [(+ y h -2)])
+     )))
+(defmethod zone-to-tiles :plot-w [{:keys [coords dims]}]
+  (let [[x y] coords [w h] dims]
+    (tmerge
+     (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
+     (fill-grid :grass [x] (range (inc y) (+ y h -1)))
+     (fill-grid :wall [(inc x)] (range (inc y) (+ y h -1)))
+     )))
+(defmethod zone-to-tiles :plot-e [{:keys [coords dims]}]
+  (let [[x y] coords [w h] dims]
+    (tmerge
+     (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
+     (fill-grid :grass [(+ x w -1)] (range (inc y) (+ y h -1)))
+     (fill-grid :wall [(+ x w -2)] (range (inc y) (+ y h -1)))
+     )))
 
 (defn- gen-zone-town [dims]
-  (tree-seq #(#{:v :h} (:type %))
+  (tree-seq #(#{:v :h :lot-n :lot-s :lot-e :lot-w} (:type %))
             #(split-zone %)
             {:type :v :coords [0 0] :dims dims}))
-
-(defn- gen-block-town [w h]
-  (loop [town {}
-         new-blocks {[(quot w 2) (quot h 2)] :street-ns}]
-    (let [proposed-blocks (reduce
-                         ;;result of build-blocks is overwritten by previous results
-                           #(merge (build-blocks (key %2) (val %2)) %1) {} new-blocks)
-          allowed-keys (remove (fn [[x y]]
-                                 (or (get town [x y])
-                                     (< x 0) (< y 0) (> x w) (> y h)))
-                               (keys proposed-blocks))
-          allowed-blocks (select-keys proposed-blocks allowed-keys)]
-      (if (empty? allowed-keys)
-        (do (println (count town))
-            town)
-        (recur (into town allowed-blocks) allowed-blocks)))))
 
 ;; create a temporary mutable ref for the rot-js map generator to use
 ;;   then return an ordinary clj hashmap
 (defn- generate-grid [[w h]]
   (let [rot-digger (rot/Map.Digger. w h)
         ;noise (rot/Noise.Simplex.)
-        town (gen-zone-town [w h])
-        ;town (gen-block-town w h)
-        bg-grass (into {} (for [x (range w) y (range h)]
-                            [[x y]
+        town (time (gen-zone-town [w h]))
+        bg-grass {} #_(into {} (for [x (range w) y (range h)]
+                                 [[x y]
                             ;(if (< 0.6 (.get noise (/ x 3) (/ y 3))) :grass :empty)
-                             :empty
-                             ]))
+                                  :empty]))
         grid-ref #_(atom {:grid {} :decor {}})
         (atom {:decor {}
                :grid
-               (reduce #(merge (zone-to-tiles %2) %1) {} town)
-               ;(merge bg-grass (reduce #(into %1 (block-to-tiles (key %2) (val %2))) {} town))
+               (time (apply tmerge (keep zone-to-tiles town)) )
                })]
     ;(.create rot-digger (digger-callback grid-ref))
     ;(.create rot-digger)
@@ -319,7 +297,7 @@
     ;; make a flow field for each box
     (swap! flow-fields merge
            (reduce
-            #(assoc %1 %2 (utils/breadth-first #{%2} grid utils/neigh4 1000))
+            #(assoc %1 %2 (utils/breadth-first #{%2} grid utils/neigh4 50))
             {}
             box-keys))))
 
@@ -448,7 +426,11 @@
         ;;if entity's to do list is empty, get all boxes from world
         box-todo (or (seq (:box-todo e)) (:boxes s))
         ;;min all fields of boxes on to do list
-        field (reduce #(merge-with min %1 (get f %2)) {} box-todo)]
+        field
+        #_(reduce #(merge-with min %1 (get f %2)) {} box-todo)
+        (reduce #(merge2 min %1 (get f %2))
+                (get f (first box-todo)) (rest box-todo))
+        #_(time (mergef min (map #(get f %) box-todo)))]
     ;; TODO - generalize the follow-field function
     (when-let [next-step (apply min-key field (neigh-fn field coords))]
       ;; check if entity is already at field minimum

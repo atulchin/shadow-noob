@@ -18,6 +18,45 @@
 (defn sample [n coll]
   (take n (shuffle coll)))
 
+(defn split-int [num parts]
+  (loop [w num n parts s []]
+    (let [x (quot w n)
+          s' (conj s x)]
+      (if (< n 2)
+        s'
+        (recur (- w x) (dec n) s'))
+      )))
+
+;; transients versions of merge-with
+(defn merge2 [f a b]
+  (persistent!
+   (reduce
+    (fn [m [k v]]
+      (if-let [v0 (get m k)]
+        (assoc! m k (f v0 v))
+        (assoc! m k v)))
+    (transient a)
+    b)))
+
+(defn mergef [f maps]
+  (persistent!
+   (reduce
+    (fn [m-tr m2]
+      (reduce (fn [m [k v]]
+                (if-let [v0 (get m k)]
+                  (assoc! m k (f v0 v))
+                  (assoc! m k v))) m-tr m2))
+    (transient (first maps))
+    (rest maps))))
+
+(defn tmerge [& maps]
+  (persistent!
+   (reduce
+    (fn [m-tr m2]
+      (reduce (fn [m [k v]] (assoc! m k v)) m-tr m2))
+    (transient (first maps))
+    (rest maps))))
+
 (defn neigh4 [grid coords]
   (filter grid (map #(mapv + coords %) [[0 1] [1 0] [0 -1] [-1 0]])))
 

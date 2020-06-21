@@ -1,6 +1,7 @@
 
 (ns app.drawcanvas
-  (:require [clojure.core.async :as a :refer [put! chan]]))
+  (:require [clojure.core.async :as a :refer [put! chan]]
+            [clojure.set :as set]))
 
 ;; just functions for drawing to the display
 
@@ -10,6 +11,7 @@
 ;;   may be read/written concurrently by other processes
 (defonce context (atom {:ctx nil
                         :dims [0 0]
+                        :grid-dims [0 0]
                         :tiles nil
                         :tilemap {}
                         :icons {}
@@ -56,8 +58,6 @@
 (defn calc-breakpoints-center [_ [a b]]
   {:x (dec (quot a 2)) :y (dec (quot b 2))})
 
-(def calc-breakpoints calc-breakpoints-shift)
-
 ;;returns max breakpoints less than focal coords
 (defn get-grid-start-shift [breaks [i j]]
   (let [xs (filter #(<= % i) (:x breaks))
@@ -68,12 +68,12 @@
 (defn get-grid-start-center [breaks [i j]]
   [(- i (:x breaks)) (- j (:y breaks))])
 
+(def calc-breakpoints calc-breakpoints-shift)
 (def get-grid-start get-grid-start-shift)
 
 ;;convert grid coords to screen coords
 (defn screen-coords [grid-coords zero-coords]
   (mapv * TILE-DIMS (mapv - grid-coords zero-coords)))
-
 
 (defn load-tiles [filename ch]
   (let [tiles (.createElement js/document "img")]
@@ -109,6 +109,7 @@
     (.appendChild (. js/document -body) canvas)
     (swap! context merge {:ctx ctx
                           :dims dims
+                          :grid-dims [w h]
                           :tiles tiles})
     out))
 
@@ -194,13 +195,17 @@
 ;;   in the "visible" area of the world grid only
 (defn draw-visible [context-map world-state focal-coords]
   ;;update drawing area based on pre-calculated breakpoints
-  (let [d-context (assoc context-map :grid-start 
-                         (get-grid-start (:breakpoints context-map) focal-coords))
-        seen-set (:seen world-state)
+  (let [[sx sy] (get-grid-start (:breakpoints context-map) focal-coords)
+        [ex ey] (mapv + [sx sy] (:grid-dims context-map))
+        d-context (assoc context-map :grid-start [sx sy])
+        seen-set (set/select
+                  (fn [[x y]] (and (< x ex) (< y ey) (>= x sx) (>= y sy)))
+                  (:seen world-state))
+        
         vismap (:visible world-state)
         visible-entities (filter #(contains? vismap (:coords %))
                                  (vals (:entities world-state)))]
-    
+
     ;;draw previously seen areas first
     (draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
     (draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
@@ -213,8 +218,7 @@
 
     ;;draw entities whose coords are in the visible area
     (doseq [e visible-entities]
-      (draw-entity d-context e)
-      )))
+      (draw-entity d-context e))))
 
 ;; draw-element multimethod
 ;;   draws different things depending on :type key
@@ -224,14 +228,14 @@
 ;;   (element's :data key is a function that returns it)
 (defmethod draw-element :grid [{:keys [data]} _ d-context]
   (let [{:keys [world-state focal-coords]} (data)]
-    ;(draw-visible d-context world-state focal-coords)
-    (draw-visible d-context 
-                  (assoc world-state 
-                         :seen #{}
-                         :visible (zipmap 
-                                   (keys (merge (:decor world-state) (:grid world-state)))
-                                   (repeat 1)))
-                  focal-coords)
+    (draw-visible d-context world-state focal-coords)
+    #_(draw-visible d-context 
+                    (assoc world-state 
+                           :seen #{}
+                           :visible (zipmap 
+                                     (keys (merge (:decor world-state) (:grid world-state)))
+                                     (repeat 1)))
+                    focal-coords)
     ))
 
 ;; :type :button draws a text button
