@@ -57,6 +57,20 @@
     (transient (first maps))
     (rest maps))))
 
+(defn rotate-grid [deg [x y] [w h] grid-map]
+  (let [[s c rx ry] (case deg
+                      90 [1 0 x (+ y h -1)] ;;cw
+                      180 [0 -1 (+ x w -1) (+ y h -1)]
+                      270 [-1 0 (+ x w -1) y] ;;ccw
+                      )
+        f (fn [[x0 y0]] (let [tx (- x0 rx) ty (- y0 ry)]
+                          [(+ (* c tx) (* -1 s ty) x)
+                           (+ (* s tx) (* c ty) y)]
+                          ))]
+    ;;keys are grid coords
+    (persistent! (reduce (fn [m [k v]] (assoc! m (f k) v)) (transient {}) grid-map))
+    ))
+
 (defn neigh4 [grid coords]
   (filter grid (map #(mapv + coords %) [[0 1] [1 0] [0 -1] [-1 0]])))
 

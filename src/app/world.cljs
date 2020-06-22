@@ -3,7 +3,9 @@
   (:require ["rot-js" :as rot]
             [clojure.set :as set]
             [app.utils :as utils :refer 
-             [assoc-multi update-all sample merge2 mergef tmerge split-int]]))
+             [assoc-multi update-all sample 
+              merge2 mergef tmerge split-int rotate-grid]])
+  )
 
 (declare chase! compute-fov update-vis)
 
@@ -202,6 +204,12 @@
 (defn fill-grid [v xs ys]
   (persistent! (reduce conj! (transient {}) (for [x xs y ys] [[x y] v]))))
 
+(defn plot-tiles [[x y] [w h]]
+  (tmerge
+   (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
+   (fill-grid :grass (range (inc x) (+ x w -1)) [y])
+   (fill-grid :wall (range (inc x) (+ x w -1)) [(inc y)])))
+
 (defmulti zone-to-tiles :type)
 (defmethod zone-to-tiles :default [_] nil)
 (defmethod zone-to-tiles :r [{:keys [coords dims]}]
@@ -209,33 +217,16 @@
     (fill-grid :floor (range x (+ x w)) (range y (+ y h)))
     ))
 (defmethod zone-to-tiles :plot-n [{:keys [coords dims]}]
-  (let [[x y] coords [w h] dims]
-    (tmerge
-     (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
-     (fill-grid :grass (range (inc x) (+ x w -1)) [y])
-     (fill-grid :wall (range (inc x) (+ x w -1)) [(inc y)])
-     )))
+  (plot-tiles coords dims))
 (defmethod zone-to-tiles :plot-s [{:keys [coords dims]}]
-  (let [[x y] coords [w h] dims]
-    (tmerge
-      (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
-      (fill-grid :grass (range (inc x) (+ x w -1)) [(+ y h -1)])
-      (fill-grid :wall (range (inc x) (+ x w -1)) [(+ y h -2)])
-     )))
+  (rotate-grid 180 coords dims (plot-tiles coords dims)))
 (defmethod zone-to-tiles :plot-w [{:keys [coords dims]}]
-  (let [[x y] coords [w h] dims]
-    (tmerge
-     (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
-     (fill-grid :grass [x] (range (inc y) (+ y h -1)))
-     (fill-grid :wall [(inc x)] (range (inc y) (+ y h -1)))
-     )))
+  (let [[w h] dims]
+    (rotate-grid 270 coords [h w] (plot-tiles coords [h w]))
+    ))
 (defmethod zone-to-tiles :plot-e [{:keys [coords dims]}]
-  (let [[x y] coords [w h] dims]
-    (tmerge
-     (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
-     (fill-grid :grass [(+ x w -1)] (range (inc y) (+ y h -1)))
-     (fill-grid :wall [(+ x w -2)] (range (inc y) (+ y h -1)))
-     )))
+  (let [[w h] dims]
+    (rotate-grid 90 coords [h w] (plot-tiles coords [h w]))))
 
 (defn- gen-zone-town [dims]
   (tree-seq #(#{:v :h :lot-n :lot-s :lot-e :lot-w} (:type %))
