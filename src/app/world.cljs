@@ -23,7 +23,7 @@
                  :seen #{}
                  :visible {}
                  :entities {:player {:id :player :type :local-player
-                                     :fov-fn :fov-360 :vision 30
+                                     :fov-fn :fov-360 :vision 10
                                      :move-time 10 :diag 1.4
                                      :inv {:potion-speed 1 :scroll-teleport 2}}
                             :pedro {:id :pedro :type :npc
@@ -131,6 +131,12 @@
 ;;   convert to clj vector
 (def dirs (get (js->clj (. rot -DIRS)) "8"))
 
+(def things {:tree {:blocks-light true}})
+
+(defn transparent? [grid coords]
+  (let [v (get grid coords)]
+    (and v (not (get-in things [v :blocks-light])))))
+
 ;; rot-js map generator uses callback fn to modify an object
 ;;   this generates and returns that fn
 (defn- digger-callback [grid-ref]
@@ -146,7 +152,7 @@
 
 (def SPLIT-LIM 20)
 ;(def SPLIT-LIM 40)
-(def LOT-W 4)
+(def LOT-W 5)
 ;(def LOT-W 7)
 (def ROAD-W 2)
 ;(def ROAD-W 4)
@@ -204,29 +210,50 @@
 (defn fill-grid [v xs ys]
   (persistent! (reduce conj! (transient {}) (for [x xs y ys] [[x y] v]))))
 
+(defn clear-grid [m xs ys]
+  (apply dissoc m (for [x xs y ys] [x y])))
+
+(defn fill-gridf [f xs ys]
+  (persistent! (reduce conj! (transient {}) (for [x xs y ys] [[x y] (f x y)])))
+  )
+
+(def noise (rot/Noise.Simplex.))
+
 (defn plot-tiles [[x y] [w h]]
-  (tmerge
-   (fill-grid :empty (range x (+ x w)) (range y (+ y h)))
-   (fill-grid :grass (range (inc x) (+ x w -1)) [y])
-   (fill-grid :wall (range (inc x) (+ x w -1)) [(inc y)])))
+  (let [bldg-h 3 #_(max 2 (min (dec w) (- h 4)))]
+    {:grid (->
+            (fill-gridf #(if (< 0.6 (.get noise (/ %1 3) (/ %2 3))) :tree :empty)
+                        (range x (+ x w)) (range y (+ y h)))
+            (tmerge (fill-grid :empty (range (inc x) (+ x w -1)) (range y (+ y 2)))
+                    (fill-grid :path [(+ x (quot w 2))]  (range y (+ y 2)))
+                    )
+            (clear-grid (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h)))
+            )
+     :decor
+     (-> 
+      (fill-grid :wall (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h)))
+      (assoc [(+ x (quot w 2)) (+ y 2)] :door)
+      )
+     }
+    ))
 
 (defmulti zone-to-tiles :type)
 (defmethod zone-to-tiles :default [_] nil)
 (defmethod zone-to-tiles :r [{:keys [coords dims]}]
   (let [[x y] coords [w h] dims]
-    (fill-grid :floor (range x (+ x w)) (range y (+ y h)))
+    {:grid (fill-grid :floor (range x (+ x w)) (range y (+ y h)))}
     ))
 (defmethod zone-to-tiles :plot-n [{:keys [coords dims]}]
   (plot-tiles coords dims))
 (defmethod zone-to-tiles :plot-s [{:keys [coords dims]}]
-  (rotate-grid 180 coords dims (plot-tiles coords dims)))
+  ;; k is :grid or :decor, v is coord map
+  (reduce-kv #(assoc %1 %2 (rotate-grid 180 coords dims %3)) {} (plot-tiles coords dims)))
 (defmethod zone-to-tiles :plot-w [{:keys [coords dims]}]
   (let [[w h] dims]
-    (rotate-grid 270 coords [h w] (plot-tiles coords [h w]))
-    ))
+    (reduce-kv #(assoc %1 %2 (rotate-grid 270 coords [h w] %3)) {} (plot-tiles coords [h w]))))
 (defmethod zone-to-tiles :plot-e [{:keys [coords dims]}]
   (let [[w h] dims]
-    (rotate-grid 90 coords [h w] (plot-tiles coords [h w]))))
+    (reduce-kv #(assoc %1 %2 (rotate-grid 90 coords [h w] %3)) {} (plot-tiles coords [h w]))))
 
 (defn- gen-zone-town [dims]
   (tree-seq #(#{:v :h :lot-n :lot-s :lot-e :lot-w} (:type %))
@@ -237,17 +264,14 @@
 ;;   then return an ordinary clj hashmap
 (defn- generate-grid [[w h]]
   (let [rot-digger (rot/Map.Digger. w h)
-        ;noise (rot/Noise.Simplex.)
         town (time (gen-zone-town [w h]))
         bg-grass {} #_(into {} (for [x (range w) y (range h)]
                                  [[x y]
                             ;(if (< 0.6 (.get noise (/ x 3) (/ y 3))) :grass :empty)
                                   :empty]))
         grid-ref #_(atom {:grid {} :decor {}})
-        (atom {:decor {}
-               :grid
-               (time (apply tmerge (keep zone-to-tiles town)) )
-               })]
+        (atom (time (apply merge-with merge (keep zone-to-tiles town))) 
+         )]
     ;(.create rot-digger (digger-callback grid-ref))
     ;(.create rot-digger)
     ;;for rooms, .create includes walls
@@ -299,17 +323,24 @@
 ;;fov functions used by entities
 (defmethod compute-fov :fov-360 [{[x y] :coords vision :vision}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
-  ;; [does making a vector inside an atom transient do anything?]
-  (let [data-ref (atom (transient {}))
+  (let [data-ref (atom {})
         {:keys [grid]} @world-state
         ;;precise shadowcasting; 360 degrees only, but provides degrees of visibility
         ;; rot-js FOV needs a callback to determine if a cell is transparent
-        FOV-P (rot/FOV.PreciseShadowcasting. #(contains? grid [%1 %2]))
-        ;FOV-P (rot/FOV.RecursiveShadowcasting. #(contains? grid [%1 %2]))
-        ]
+        FOV-P (rot/FOV.PreciseShadowcasting. #(or (transparent? grid [%1 %2]) (= [x y] [%1 %2])))
+        ;;recursive shadowcasting; better features
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))]
     ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
-    (.compute FOV-P x y vision #(swap! data-ref assoc! [%1 %2] %4))
-    (persistent! @data-ref)))
+    (.compute FOV-R x y vision #(swap! data-ref assoc [%1 %2] %4))
+    ;;use precise for shadow info
+    (.compute FOV-P x y vision (fn [x y r v]
+                                 (swap! data-ref
+                                        (fn [m]
+                                          (if (contains? m [x y])
+                                            (assoc m [x y] v)
+                                            m)))
+                                 ))
+    (identity @data-ref)))
 
 (defmethod compute-fov :fov-90 [{[x y] :coords vision :vision facing :facing}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
@@ -318,7 +349,7 @@
         {:keys [grid]} @world-state
         ;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
         ;; rot-js FOV needs a callback to determine if a cell is transparent
-        FOV-R (rot/FOV.RecursiveShadowcasting. #(contains? grid [%1 %2]))]
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))]
     ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
     (.compute90 FOV-R x y vision facing #(swap! data-ref assoc! [%1 %2] %4))
     (persistent! @data-ref)))

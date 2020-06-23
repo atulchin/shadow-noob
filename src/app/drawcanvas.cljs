@@ -23,8 +23,11 @@
                {:file "roguelikeSheet.png" :offsets [17 17] :grabdims [16 16] :img nil}])
 
 (def defaults {:tilemap {"@" [0 [25 0]]
-                         "." [0 [11 0]]
+                         "." [0 [11 2]]
                          "," [0 [0 2]]
+                         "&" [0 [0 1]]
+                         "/" [0 [1 0]]
+                         "+" [0 [3 9]]
                          " " [0 [5 0]]
                          "#" [0 [13 16]]
                          "`" [0 [19 0]]
@@ -35,6 +38,9 @@
                  :icons {:player "@"
                          :floor "."
                          :grass ","
+                         :tree "&"
+                         :path "/"
+                         :door "+"
                          :empty " "
                          :wall "#"
                          :wall-s "`"
