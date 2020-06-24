@@ -145,9 +145,19 @@
       (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [255 255 0 (* v 0.2)])
       )))
 
+;; draw glow or shadow depending on light value
+(defn draw-light [d-context mkvs]
+  (let [{:keys [ctx grid-start]} d-context]
+    (doseq [[k v] mkvs]
+      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS
+                 (conj (mapv #(min 200 %) v) 
+                       (max 0.1 (min 0.5 (Math/abs (/ (- (apply max v) 128) 256))))
+                       ))
+      )))
+
 ;;draws shadows based on k-v data
 ;; keys are coords; vals are light intensity
-(defn draw-shadow [d-context mkvs]
+#_(defn draw-shadow [d-context mkvs]
   (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
       (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [0 0 0 (* 0.5 (- 1.0 v))])
@@ -208,8 +218,8 @@
                   (fn [[x y]] (and (< x ex) (< y ey) (>= x sx) (>= y sy)))
                   (:seen world-state))
         
-        vismap (:visible world-state)
-        visible-entities (filter #(contains? vismap (:coords %))
+        viskeys (set (keys (:visible world-state)))
+        visible-entities (filter #(contains? viskeys (:coords %))
                                  (vals (:entities world-state)))]
 
     ;;draw previously seen areas first
@@ -218,9 +228,11 @@
     (draw-dark d-context seen-set)
 
     ;;then draw over those with currently visible area
-    (draw-mkvs d-context true (select-keys (:grid world-state) (keys vismap)))
-    (draw-mkvs d-context false (select-keys (:decor world-state) (keys vismap)))
-    (draw-shadow d-context vismap)
+    (draw-mkvs d-context true (select-keys (:grid world-state) viskeys))
+    (draw-mkvs d-context false (select-keys (:decor world-state) viskeys))
+    (draw-light d-context (:visible world-state))
+    ;(draw-shadow d-context (:visible world-state))
+    ;(draw-light d-context (select-keys (:light world-state) viskeys))
 
     ;;draw entities whose coords are in the visible area
     (doseq [e visible-entities]

@@ -405,7 +405,7 @@
 (defn game-options! [{:keys [speed vision]}]
   (swap! world-state update-in [:entities :player]
          #(assoc %
-                 :fov-fn (if vision :fov-360 :fov-90)
+                 :vision (if vision (:vision %) (quot (:vision %) 2))
                  :diag (if speed 1.0 1.4))))
 
 
