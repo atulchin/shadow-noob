@@ -4,7 +4,7 @@
 ;; modifying multiple keys in a hashmap
 ;;   with a static value v:
 (defn assoc-multi [coll ks v]
-  (reduce #(assoc %1 %2 v) coll ks))
+  (persistent! (reduce #(assoc! %1 %2 v) (transient coll) ks)))
 
 ;;   with a function of the current value:
 (defn update-multi [coll ks f]

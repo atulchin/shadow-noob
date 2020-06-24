@@ -31,7 +31,7 @@
                             :pedro {:id :pedro :type :npc
                                     :fov-fn :fov-90 :vision 5
                                     :move-time 10 :diag 2.0
-                                    :action #(chase! :pedro :player 4)}}
+                                    :action #(chase! :pedro :player 10 4)}}
                  :time 0
                  :effects #{}})
 
@@ -289,17 +289,29 @@
 
 (defn compute-light [grid light-sources]
  (let [light-fov (rot/FOV.PreciseShadowcasting.
-                  #(transparent? grid [%1 %2]) 
+                  #(transparent? grid [%1 %2])
                   ;#js{:topology 8}
                   )
-       light (rot/Lighting. 
+       light (rot/Lighting.
               nil;#(if (contains? grid [%1 %2]) 0.5 0) 
-              #js{:range 6 :passes 1}
-              )
-       data-ref (atom {})]
+              #js{:range 7 :passes 1})
+       data-ref (atom {})
+       ;;recursive fov for shaping the light
+       FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))
+       fov-ref (atom {})]
    (.setFOV light light-fov)
-   (doseq [[[x y] v] light-sources] (.setLight light x y (clj->js v)))
-   (.compute light #(swap! data-ref assoc [%1 %2] (js->clj %3)))
+   ;;light sources are [coords rgb-vector]
+   (doseq [[[x y] v] light-sources]
+     (.setLight light x y (clj->js v))
+     ;;add this light source's fov to "lightable" squares
+     (.compute FOV-R x y 6 #(swap! fov-ref assoc [%1 %2] %3)))
+   ;;compute light map
+   (let [fov @fov-ref]
+     (.compute light #(when (contains? fov [%1 %2])
+                        (swap! data-ref assoc [%1 %2] (js->clj %3)))
+               ))
+   ;;this makes square light grids
+   ;(.compute light #(swap! data-ref assoc [%1 %2] (js->clj %3)))
    @data-ref))
 
 ;; fov map with coord keys and distance values
@@ -322,12 +334,14 @@
   (let [{:keys [grid light-sources]} @world-state
         vismap (compute-light grid
                               ;; player emits neutral light for fov and shadow effect
-                              (assoc light-sources [x y] [128 128 128]))
+                              (assoc light-sources [x y] [96 96 96]))
         ;;fov map with distance
         fov (fovmax grid [x y])]
 
     (swap! world-state assoc :light vismap)
-    (swap! flow-fields assoc :player fov)
+    ;;sight-map to player = fov dists whose coords are in the grid
+    (swap! flow-fields assoc :player (select-keys fov (keys grid)))
+    ;;actual fov = squares with light and line of sight
     (select-keys vismap (keys fov))
     ))
 
@@ -394,7 +408,7 @@
            ;;store location of boxes and ananas
            :boxes (vec box-keys) :ananas (first box-keys))
     ;; compute lighting
-    (swap! world-state assoc :light-sources (zipmap box-keys (repeat [255 200 0])))
+    (swap! world-state assoc :light-sources (zipmap box-keys (repeat [300 200 0])))
     #_(swap! world-state #(assoc % :light
                                (compute-light
                                 (:grid %)
@@ -474,14 +488,17 @@
         ;;return result (using get-entity for entity with effects)
         {:wander next-step :dt (move-time (get-entity s' entity-key))}))))
 
-(defn- follow-field! [entity-key field topo]
+(defn- follow-field! [entity-key field dist topo]
   (let [neigh-fn (if (= 4 topo) utils/neigh4 utils/neigh8)
-        coords (get-in @world-state [:entities entity-key :coords])]
+        coords (get-in @world-state [:entities entity-key :coords])
+        curr-val (get field coords)]
     ;;find the lowest-valued entry in field among neighbors of coords
     ;;if coords have no neightbors in field, return nil
-    (when-let [next-step (apply min-key field (neigh-fn field coords))]
+    (when-let [next-step (and
+                          (< curr-val dist)
+                          (apply min-key field (neigh-fn field coords)))]
       ;; check if entity is already at field minimum
-      (if (and (get field coords) (< (get field coords) (get field next-step)))
+      (if (and curr-val (< curr-val (get field next-step)))
         {:path-length 0 :dt 0}
       ;; else update state
         (let [s' (swap! world-state
@@ -489,7 +506,9 @@
           ;;return result (using get-entity for entity with effects)
           {:path-length (get field next-step)
            :move next-step
-           :dt (move-time (get-entity s' entity-key))})))))
+           :dt (move-time (get-entity s' entity-key))}
+          ))
+      )))
 
 (defn- patrol-boxes! [entity-key topo]
   (let [s @world-state
@@ -528,8 +547,8 @@
           e-coords (get-in s [:entities entity-key :coords])
           t-coords (get-in s [:entities target-key :coords])]
       (follow-path! entity-key (compute-path e-coords t-coords topology))))
-(defn chase! [entity-key target-key topology]
-  (or (follow-field! entity-key (get @flow-fields target-key) topology)
+(defn chase! [entity-key target-key dist topology]
+  (or (follow-field! entity-key (get @flow-fields target-key) dist topology)
       (patrol-boxes! entity-key topology)
       (move-random! entity-key topology)))
 

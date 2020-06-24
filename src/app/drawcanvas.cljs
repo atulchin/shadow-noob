@@ -149,11 +149,10 @@
 (defn draw-light [d-context mkvs]
   (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
-      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS
-                 (conj (mapv #(min 200 %) v) 
-                       (max 0.1 (min 0.5 (Math/abs (/ (- (apply max v) 128) 256))))
-                       ))
-      )))
+      (let [rgb (mapv #(min 200 %) v)
+            a (max 0.1 (min 0.5 (Math/abs (/ (- (apply max v) 128) 256))))]
+        (draw-rect ctx (screen-coords k grid-start) TILE-DIMS (conj rgb a))
+        ))))
 
 ;;draws shadows based on k-v data
 ;; keys are coords; vals are light intensity
@@ -214,7 +213,7 @@
   (let [[sx sy] (get-grid-start (:breakpoints context-map) focal-coords)
         [ex ey] (mapv + [sx sy] (:grid-dims context-map))
         d-context (assoc context-map :grid-start [sx sy])
-        seen-set (set/select
+        seen-set (filter
                   (fn [[x y]] (and (< x ex) (< y ey) (>= x sx) (>= y sy)))
                   (:seen world-state))
         
@@ -309,8 +308,7 @@
       (let [rel-time (- time current-time)
             b (* 255 (Math/pow 1.03 rel-time))]
         (draw-text ctx msg (mapv * TILE-DIMS p) [b b b]))
-      (when (seq r) (recur r (mapv + [0 1] p)))
-      )))
+      (when (seq r) (recur r (mapv + [0 1] p))))))
 
 ;; called by render-ui, takes collection of elements to draw
 (defn draw-group [coll focused-elem d-context]
@@ -320,8 +318,7 @@
       (draw-group sub-coll focused-elem d-context))
     ))
 
-;; called from main, takes UI db
-(defn render-ui [{:keys [ui-components background focused foreground]}]
+(defn- render-ui- [{:keys [ui-components background focused foreground]}]
   (let [[fg-key _] focused
         d-context @context]
     (clear-canvas d-context)
@@ -333,4 +330,8 @@
     ;;overlay foreground comps
     (doseq [k foreground] (draw-group (get ui-components k) nil d-context))
     ))
+
+;; called from main, takes UI db
+(defn render-ui [db]
+  (js/requestAnimationFrame #(render-ui- db)))
 
