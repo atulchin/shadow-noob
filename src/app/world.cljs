@@ -3,7 +3,7 @@
   (:require ["rot-js" :as rot]
             [clojure.set :as set]
             [app.utils :as utils :refer 
-             [assoc-multi update-all sample 
+             [idiv assoc-multi update-all sample 
               merge2 mergef split-int rotate-grid]])
   )
 
@@ -25,7 +25,7 @@
                  ;:light {}
                  :light-sources {}
                  :entities {:player {:id :player :type :local-player
-                                     :fov-fn :fov-player :vision 8
+                                     :fov-fn :fov-player :vision 6
                                      :move-time 10 :diag 1.4
                                      :inv {:potion-speed 1 :scroll-teleport 2}}
                             :pedro {:id :pedro :type :npc
@@ -139,6 +139,13 @@
   (let [v (get grid coords)]
     (and v (not (get-in things [v :blocks-light])))))
 
+(defn- noise-fn []
+  (let [n (rot/Noise.Simplex.)]
+    (fn [x y scale]
+      (.get n (/ x scale) (/ y scale)))))
+
+(defonce noise2d (noise-fn))
+
 ;; rot-js map generator uses callback fn to modify an object
 ;;   this generates and returns that fn
 (defn- digger-callback [grid-ref]
@@ -152,12 +159,12 @@
 
 (defmulti split-zone :type)
 
-(def SPLIT-LIM 20)
-;(def SPLIT-LIM 40)
-(def LOT-W 5)
-;(def LOT-W 7)
-(def ROAD-W 2)
-;(def ROAD-W 4)
+;(def SPLIT-LIM 20)
+(def SPLIT-LIM 40)
+;(def LOT-W 5)
+(def LOT-W 7)
+;(def ROAD-W 2)
+(def ROAD-W 4)
 
 (defmethod split-zone :v [{[x y] :coords [w h] :dims}]
   (let [s (+ (quot w 4) (rand-int (quot w 2)))
@@ -167,7 +174,9 @@
         child-e (if (< h lim) :lot-w :h)
         rw (min (max (inc (quot h 10)) ROAD-W) (* ROAD-W 2))]
     [{:type child-w :coords [x y] :dims [s h]}
-     {:type :r :coords [(+ s x) y] :dims [rw h]}
+     {:type :s-w :coords [(+ s x) y] :dims [1 h]}
+     {:type :r-ns :coords [(+ s x 1) (dec y)] :dims [(- rw 2) (+ h 2)]}
+     {:type :s-e :coords [(+ s x rw -1) y] :dims [1 h]}
      {:type child-e :coords [(+ s x rw) y] :dims [(- w s rw) h]}]))
 
 (defmethod split-zone :h [{[x y] :coords [w h] :dims}]
@@ -178,7 +187,9 @@
         child-s (if (< w lim) :lot-n :v)
         rw (min (max (inc (quot w 10)) ROAD-W) (* ROAD-W 2))]
     [{:type child-n :coords [x y] :dims [w s]}
-     {:type :r :coords [x (+ s y)] :dims [w rw]}
+     {:type :s-n :coords [x (+ s y)] :dims [w 1]}
+     {:type :r-ew :coords [(dec x) (+ s y 1)] :dims [(+ w 2) (- rw 2)]}
+     {:type :s-s :coords [x (+ s y rw -1)] :dims [w 1]}
      {:type child-s :coords [x (+ s y rw)] :dims [w (- h s rw)]}]))
 
 (defmethod split-zone :lot-s [{[x y] :coords [w h] :dims}]
@@ -219,38 +230,47 @@
   (persistent! (reduce conj! (transient {}) (for [x xs y ys] [[x y] (f x y)])))
   )
 
-(defn- noise-fn []
-  (let [n (rot/Noise.Simplex.)]
-    (fn [x y scale]
-      (.get n (/ x scale) (/ y scale)))))
-
-(defonce noise2d (noise-fn))
-
 (defn plot-tiles [[x y] [w h]]
-  (let [bldg-h 3 #_(max 2 (min (dec w) (- h 4)))]
+  (let [bldg-h (min (max 4 (idiv h 3)) 9)
+        yard-h (min (max 2 (idiv (- h bldg-h) 3)) 7)]
     {:grid
      (-> {}
          (into (fill-gridf #(if (< 0.6 (noise2d %1 %2 5)) :tree :empty)
                            (range x (+ x w)) (range y (+ y h))))
-         (into (fill-grid :empty (range (inc x) (+ x w -1)) (range y (+ y 1))))
+         (into (fill-grid :empty (range (inc x) (+ x w -1)) (range y (+ y yard-h -1))))
          (into (fill-gridf #(if (> 0.0 (noise2d %1 %2 10)) :flowers :empty)
-                           (range (inc x) (+ x w -1)) (range (+ y 1) (+ y 2))))
-         (into (fill-grid :path [(+ x (quot w 2))]  (range y (+ y 2))))
-         (clear-grid (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h))))
+                           (range (inc x) (+ x w -1)) (range (+ y yard-h -1) (+ y yard-h))))
+         (into (fill-grid :path [(+ x (quot w 2))]  (range y (+ y yard-h))))
+         (clear-grid (range (inc x) (+ x w -1)) (range (+ y yard-h) (+ y yard-h bldg-h))))
      :decor
      (-> {}
-         (into (fill-grid :wall (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h))))
-         (assoc [(+ x (quot w 2)) (+ y 2)] :door))}
+         (into (fill-grid :wall (range (inc x) (+ x w -1)) (range (+ y yard-h) (+ y yard-h bldg-h))))
+         (assoc [(+ x (quot w 2)) (+ y yard-h)] :door))}
     ))
+(defn road-tiles [[x y] [w h]]
+  {:grid (-> {}
+             (into (fill-grid :floor (range x (+ x w)) (range y (+ y h)))))
+   :decor {}})
+(defn sidewalk-tiles [[x y] [w h]]
+  {:grid (-> {}
+             (into (fill-grid :path (range x (+ x w)) (range y (+ y h)))))
+   :decor {}})
 
 (defmulti zone-to-tiles :type)
 (defmethod zone-to-tiles :default [_] nil)
-(defmethod zone-to-tiles :r [{:keys [coords dims]}]
-  (let [[x y] coords [w h] dims]
-    {:grid (fill-grid :floor (range x (+ x w)) (range y (+ y h)))}
-    ))
-(defmethod zone-to-tiles :plot-n [{:keys [coords dims]}]
-  (plot-tiles coords dims))
+(defmethod zone-to-tiles :r-ns [{:keys [coords dims]}] (road-tiles coords dims))
+(defmethod zone-to-tiles :r-ew [{:keys [coords dims]}] (road-tiles coords dims))
+
+(defmethod zone-to-tiles :s-n [{:keys [coords dims]}]
+  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords [-1 0])] :street-light))
+(defmethod zone-to-tiles :s-s [{:keys [coords dims]}]
+  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords dims [0 -1])] :street-light))
+(defmethod zone-to-tiles :s-w [{:keys [coords dims]}]
+  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords [0 -1])] :street-light))
+(defmethod zone-to-tiles :s-e [{:keys [coords dims]}]
+  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords dims [-1 0])] :street-light))
+
+(defmethod zone-to-tiles :plot-n [{:keys [coords dims]}] (plot-tiles coords dims))
 (defmethod zone-to-tiles :plot-s [{:keys [coords dims]}]
   ;; k is :grid or :decor, v is coord map
   (reduce-kv #(assoc %1 %2 (rotate-grid 180 coords dims %3)) {} (plot-tiles coords dims)))
@@ -270,10 +290,17 @@
 ;;   then return an ordinary clj hashmap
 (defn- generate-grid [[w h]]
   (let [rot-digger (rot/Map.Digger. w h)
-        town (time (gen-zone-town [w h]))
+        town (gen-zone-town [w h])
+        roads (filter #(#{:r-ns :r-ew} (:type %)) town)
+        non-road (remove #(#{:r-ns :r-ew} (:type %)) town)
         grid-ref #_(atom {:grid {} :decor {}})
-        (atom (time (apply merge-with into (keep zone-to-tiles town))) 
-         )]
+        (atom (time (apply merge-with into 
+                           (concat
+                            (keep zone-to-tiles non-road)
+                           ;;do roads last to overwite sidewalks
+                            (keep zone-to-tiles roads))
+                           )) 
+              )]
     ;(.create rot-digger (digger-callback grid-ref))
     ;(.create rot-digger)
     ;;for rooms, .create includes walls
@@ -337,7 +364,8 @@
 (defmethod compute-fov :fov-player [{[x y] :coords vision :vision}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
   (let [{:keys [grid light]} @world-state
-        vismap (into
+        vismap (mergef
+                #(mapv max %1 %2)
                 ;; player emits neutral light for fov and shadow effect
                 (compute-light grid vision {[x y] [96 96 96]})
                 ;; using static precomputed light map
@@ -401,7 +429,9 @@
         free-cells (set/difference (set grid-keys) (set box-keys)) ;;squares without boxes
         starting-entities (:entities @world-state)
         starting-coords (sample (count starting-entities) free-cells) ;;a vector of random starting locations
-        light-sources (zipmap box-keys (repeat [250 140 0]))
+        light-sources (zipmap 
+                       (filter #(= (get decor %) :street-light) (keys decor))
+                       (repeat [320 240 0]))
         ]
     (swap! world-state assoc
            :decor decor
@@ -415,7 +445,7 @@
            :boxes (vec box-keys) :ananas (first box-keys)
            :light-sources light-sources
            ;; compute lighting
-           :light (compute-light grid 6 light-sources)
+           :light (compute-light grid 4 light-sources)
            )
     ;; compute entities' fov based on starting info
     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
@@ -525,8 +555,7 @@
         ;;min all fields of boxes on to do list
         field
         (reduce #(merge2 min %1 (get f %2))
-                (get f (first box-todo)) (rest box-todo))
-        #_(time (mergef min (map #(get f %) box-todo)))]
+                (get f (first box-todo)) (rest box-todo))]
     ;; TODO - generalize the follow-field function
     (when-let [next-step (apply min-key field (neigh-fn field coords))]
       ;; check if entity is already at field minimum

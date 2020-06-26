@@ -29,6 +29,7 @@
                          "i" [1 [45 10]]
                          "^" [0 [21 0]]
                          "/" [0 [1 0]]
+                         "f" [0 [42 20]]
                          "+" [0 [3 9]]
                          " " [0 [5 0]]
                          "#" [0 [13 16]]
@@ -44,6 +45,7 @@
                          :flowers "i"
                          :fence "^"
                          :path "/"
+                         :street-light "f"
                          :door "+"
                          :empty " "
                          :wall "#"
@@ -78,12 +80,16 @@
 (defn get-grid-start-center [breaks [i j]]
   [(- i (:x breaks)) (- j (:y breaks))])
 
-(def calc-breakpoints calc-breakpoints-shift)
-(def get-grid-start get-grid-start-shift)
+(def calc-breakpoints calc-breakpoints-center)
+(def get-grid-start get-grid-start-center)
 
 ;;convert grid coords to screen coords
 (defn screen-coords [grid-coords zero-coords]
   (mapv * TILE-DIMS (mapv - grid-coords zero-coords)))
+
+;; converts vector to js color argument
+(defn- color-str [coll]
+  (str "rgba(" (apply str (interpose "," coll)) ")"))
 
 (defn load-tiles [filename ch]
   (let [tiles (.createElement js/document "img")]
@@ -104,10 +110,11 @@
         canvas (.createElement js/document "canvas")
         ctx (.getContext canvas "2d")
         dims (mapv * TILE-DIMS [w h])
+        bg-col [25 17 17]
         tiles (mapv (fn [m ch]
-                      (assoc m :img (load-tiles (:file m) ch))) 
+                      (assoc m :img (load-tiles (:file m) ch)))
                     tiledefs chs)]
-
+    (set! (.. canvas -style -backgroundColor) (color-str bg-col))
     (set! (. canvas -width) (first dims))
     (set! (. canvas -height) (second dims))
     (set! (. ctx -imageSmoothingEnabled) false)
@@ -119,6 +126,7 @@
     (.appendChild (. js/document -body) canvas)
     (swap! context merge {:ctx ctx
                           :dims dims
+                          :bg-col bg-col
                           :grid-dims [w h]
                           :tiles tiles})
     out))
@@ -128,10 +136,6 @@
 
 (defn- clear-tile [ctx [x y] [tile-w tile-h]]
   (.clearRect ctx x y tile-w tile-h))
-
-;; converts vector to js color argument
-(defn- color-str [coll]
-  (str "rgba(" (apply str (interpose "," coll)) ")"))
 
 (defn- draw-rect [ctx [x y] [w h] color]
   (set! (. ctx -fillStyle) (color-str color))
@@ -146,7 +150,7 @@
 (defn draw-glow [d-context mkvs]
   (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
-      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [255 255 0 (* v 0.2)])
+      (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [200 200 0 (* v 0.2)])
       )))
 
 ;; draw glow or shadow depending on light value
@@ -154,7 +158,7 @@
   (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
       (let [rgb (mapv #(min 220 %) v)
-            a (max 0.1 (min 0.4 (Math/abs (/ (- (apply max v) 128) 256))))]
+            a (max 0.1 (min 0.5 (Math/abs (/ (- (apply max rgb) 128) 256))))]
         (draw-rect ctx (screen-coords k grid-start) TILE-DIMS (conj rgb a))
         ))))
 
@@ -167,11 +171,15 @@
       )))
 
 ;;draws a steady shadow over the coords in the given vector
-(defn draw-dark [d-context vec]
+#_(defn draw-dark [d-context vec]
   (let [{:keys [ctx grid-start]} d-context]
     (doseq [k vec]
       (draw-rect ctx (screen-coords k grid-start) TILE-DIMS [0 0 0 0.6])
       )))
+
+;;draws a shadow over the whole screen
+(defn draw-dark [{:keys [ctx dims bg-col]}]
+  (draw-rect ctx [0 0] dims (conj bg-col 0.6)))
 
 ;;draws a named object to xy coords contained in k
 (defn- draw-coords [d-context clear? [k v]]
@@ -228,7 +236,8 @@
     ;;draw previously seen areas first
     (draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
     (draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
-    (draw-dark d-context seen-set)
+    ;;shade the entire screen, will be cleared in visible areas
+    (draw-dark d-context)
 
     ;;then draw over those with currently visible area
     (draw-mkvs d-context true (select-keys (:grid world-state) viskeys))

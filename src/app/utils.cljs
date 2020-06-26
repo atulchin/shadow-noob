@@ -1,6 +1,9 @@
 
 (ns app.utils)
 
+(defn idiv [& nums]
+  (Math/round (apply / nums)))
+
 ;; modifying multiple keys in a hashmap
 ;;   with a static value v:
 (defn assoc-multi [coll ks v]
@@ -38,7 +41,7 @@
     (transient a)
     b)))
 
-(defn mergef [f maps]
+(defn mergef [f & maps]
   (persistent!
    (reduce
     (fn [m-tr m2]
