@@ -1,7 +1,7 @@
 
 (ns app.drawcanvas
   (:require [clojure.core.async :as a :refer [put! chan]]
-            [clojure.set :as set]))
+            ))
 
 ;; just functions for drawing to the display
 
@@ -22,10 +22,12 @@
 (def tiledefs [{:file "bitpack.png" :offsets [16 16] :grabdims [16 16]  :img nil}
                {:file "roguelikeSheet.png" :offsets [17 17] :grabdims [16 16] :img nil}])
 
-(def defaults {:tilemap {"@" [0 [25 0]]
+(def defaults {:tilemap {"@" [0 [25 6]]
                          "." [0 [11 2]]
                          "," [0 [0 2]]
                          "&" [0 [0 1]]
+                         "i" [1 [45 10]]
+                         "^" [0 [21 0]]
                          "/" [0 [1 0]]
                          "+" [0 [3 9]]
                          " " [0 [5 0]]
@@ -39,6 +41,8 @@
                          :floor "."
                          :grass ","
                          :tree "&"
+                         :flowers "i"
+                         :fence "^"
                          :path "/"
                          :door "+"
                          :empty " "
@@ -149,8 +153,8 @@
 (defn draw-light [d-context mkvs]
   (let [{:keys [ctx grid-start]} d-context]
     (doseq [[k v] mkvs]
-      (let [rgb (mapv #(min 200 %) v)
-            a (max 0.1 (min 0.5 (Math/abs (/ (- (apply max v) 128) 256))))]
+      (let [rgb (mapv #(min 220 %) v)
+            a (max 0.1 (min 0.4 (Math/abs (/ (- (apply max v) 128) 256))))]
         (draw-rect ctx (screen-coords k grid-start) TILE-DIMS (conj rgb a))
         ))))
 
@@ -246,13 +250,6 @@
 (defmethod draw-element :grid [{:keys [data]} _ d-context]
   (let [{:keys [world-state focal-coords]} (data)]
     (draw-visible d-context world-state focal-coords)
-    #_(draw-visible d-context 
-                    (assoc world-state 
-                           :seen #{}
-                           :visible (zipmap 
-                                     (keys (merge (:decor world-state) (:grid world-state)))
-                                     (repeat 1)))
-                    focal-coords)
     ))
 
 ;; :type :button draws a text button

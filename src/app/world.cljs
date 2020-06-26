@@ -4,7 +4,7 @@
             [clojure.set :as set]
             [app.utils :as utils :refer 
              [assoc-multi update-all sample 
-              merge2 mergef tmerge split-int rotate-grid]])
+              merge2 mergef split-int rotate-grid]])
   )
 
 (declare chase! compute-fov update-vis)
@@ -25,7 +25,7 @@
                  ;:light {}
                  :light-sources {}
                  :entities {:player {:id :player :type :local-player
-                                     :fov-fn :fov-player :vision 6
+                                     :fov-fn :fov-player :vision 8
                                      :move-time 10 :diag 1.4
                                      :inv {:potion-speed 1 :scroll-teleport 2}}
                             :pedro {:id :pedro :type :npc
@@ -70,7 +70,7 @@
 
 ;; returns state with time t and expired effects removed
 (defn set-time [s t]
-  (merge s {:time t
+  (into s {:time t
             :effects (set/select #(> (:end %) t) (:effects s))}))
 
 ;; return entity with effects applied
@@ -219,24 +219,28 @@
   (persistent! (reduce conj! (transient {}) (for [x xs y ys] [[x y] (f x y)])))
   )
 
-(defonce noise (rot/Noise.Simplex.))
+(defn- noise-fn []
+  (let [n (rot/Noise.Simplex.)]
+    (fn [x y scale]
+      (.get n (/ x scale) (/ y scale)))))
+
+(defonce noise2d (noise-fn))
 
 (defn plot-tiles [[x y] [w h]]
   (let [bldg-h 3 #_(max 2 (min (dec w) (- h 4)))]
-    {:grid (->
-            (fill-gridf #(if (< 0.6 (.get noise (/ %1 3) (/ %2 3))) :tree :empty)
-                        (range x (+ x w)) (range y (+ y h)))
-            (tmerge (fill-grid :empty (range (inc x) (+ x w -1)) (range y (+ y 2)))
-                    (fill-grid :path [(+ x (quot w 2))]  (range y (+ y 2)))
-                    )
-            (clear-grid (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h)))
-            )
+    {:grid
+     (-> {}
+         (into (fill-gridf #(if (< 0.6 (noise2d %1 %2 5)) :tree :empty)
+                           (range x (+ x w)) (range y (+ y h))))
+         (into (fill-grid :empty (range (inc x) (+ x w -1)) (range y (+ y 1))))
+         (into (fill-gridf #(if (> 0.0 (noise2d %1 %2 10)) :flowers :empty)
+                           (range (inc x) (+ x w -1)) (range (+ y 1) (+ y 2))))
+         (into (fill-grid :path [(+ x (quot w 2))]  (range y (+ y 2))))
+         (clear-grid (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h))))
      :decor
-     (-> 
-      (fill-grid :wall (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h)))
-      (assoc [(+ x (quot w 2)) (+ y 2)] :door)
-      )
-     }
+     (-> {}
+         (into (fill-grid :wall (range (inc x) (+ x w -1)) (range (+ y 2) (+ y 2 bldg-h))))
+         (assoc [(+ x (quot w 2)) (+ y 2)] :door))}
     ))
 
 (defmulti zone-to-tiles :type)
@@ -267,12 +271,8 @@
 (defn- generate-grid [[w h]]
   (let [rot-digger (rot/Map.Digger. w h)
         town (time (gen-zone-town [w h]))
-        bg-grass {} #_(into {} (for [x (range w) y (range h)]
-                                 [[x y]
-                            ;(if (< 0.6 (.get noise (/ x 3) (/ y 3))) :grass :empty)
-                                  :empty]))
         grid-ref #_(atom {:grid {} :decor {}})
-        (atom (time (apply merge-with merge (keep zone-to-tiles town))) 
+        (atom (time (apply merge-with into (keep zone-to-tiles town))) 
          )]
     ;(.create rot-digger (digger-callback grid-ref))
     ;(.create rot-digger)
@@ -281,30 +281,35 @@
     ;;but not for corridors
     ;(doseq [r (.getCorridors rot-digger)] (.create r (digger-callback grid-ref)))
     ;;wall shadows:
-    #_(swap! grid-ref update :decor
-             (fn [m] (merge
-                      (reduce #(assoc %1 (mapv + %2 [0 1]) :wall-s) {} (keys m))
+    (swap! grid-ref update :decor
+             (fn [m] (into
+                      (reduce-kv #(if (= %3 :wall)
+                                    (assoc %1 (mapv + %2 [0 1]) :wall-s)
+                                    %1
+                                    ) {} m)
                       m)))
     @grid-ref))
 
-(defn compute-light [grid light-sources]
+(defn compute-light [grid dist light-sources]
  (let [light-fov (rot/FOV.PreciseShadowcasting.
-                  #(transparent? grid [%1 %2])
+                  ;;squares with light source are automatically transparent
+                  #(or (transparent? grid [%1 %2]) (contains? light-sources [%1 %2]))
                   ;#js{:topology 8}
                   )
        light (rot/Lighting.
               nil;#(if (contains? grid [%1 %2]) 0.5 0) 
-              #js{:range 7 :passes 1})
+              #js{:range (inc dist) :passes 1})
        data-ref (atom {})
        ;;recursive fov for shaping the light
        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))
-       fov-ref (atom {})]
+       ;;light sources are auto included
+       fov-ref (atom (set (keys light-sources)))]
    (.setFOV light light-fov)
    ;;light sources are [coords rgb-vector]
    (doseq [[[x y] v] light-sources]
      (.setLight light x y (clj->js v))
      ;;add this light source's fov to "lightable" squares
-     (.compute FOV-R x y 6 #(swap! fov-ref assoc [%1 %2] %3)))
+     (.compute FOV-R x y dist #(swap! fov-ref conj [%1 %2])))
    ;;compute light map
    (let [fov @fov-ref]
      (.compute light #(when (contains? fov [%1 %2])
@@ -331,19 +336,19 @@
 ;; and sight-map to player
 (defmethod compute-fov :fov-player [{[x y] :coords vision :vision}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
-  (let [{:keys [grid light-sources]} @world-state
-        vismap (compute-light grid
-                              ;; player emits neutral light for fov and shadow effect
-                              (assoc light-sources [x y] [96 96 96]))
+  (let [{:keys [grid light]} @world-state
+        vismap (into
+                ;; player emits neutral light for fov and shadow effect
+                (compute-light grid vision {[x y] [96 96 96]})
+                ;; using static precomputed light map
+                light)
         ;;fov map with distance
         fov (fovmax grid [x y])]
 
-    (swap! world-state assoc :light vismap)
     ;;sight-map to player = fov dists whose coords are in the grid
     (swap! flow-fields assoc :player (select-keys fov (keys grid)))
     ;;actual fov = squares with light and line of sight
-    (select-keys vismap (keys fov))
-    ))
+    (select-keys vismap (keys fov))))
 
 #_(defmethod compute-fov :fov-360 [{[x y] :coords vision :vision}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
@@ -396,6 +401,7 @@
         free-cells (set/difference (set grid-keys) (set box-keys)) ;;squares without boxes
         starting-entities (:entities @world-state)
         starting-coords (sample (count starting-entities) free-cells) ;;a vector of random starting locations
+        light-sources (zipmap box-keys (repeat [250 140 0]))
         ]
     (swap! world-state assoc
            :decor decor
@@ -406,20 +412,18 @@
            :entities (into {} (map (fn [[k v] x] [k (assoc v :coords x :facing (rand-int (count dirs)))])
                                    starting-entities starting-coords))
            ;;store location of boxes and ananas
-           :boxes (vec box-keys) :ananas (first box-keys))
-    ;; compute lighting
-    (swap! world-state assoc :light-sources (zipmap box-keys (repeat [300 200 0])))
-    #_(swap! world-state #(assoc % :light
-                               (compute-light
-                                (:grid %)
-                                (zipmap box-keys (repeatedly rand-color)))))    
+           :boxes (vec box-keys) :ananas (first box-keys)
+           :light-sources light-sources
+           ;; compute lighting
+           :light (compute-light grid 6 light-sources)
+           )
     ;; compute entities' fov based on starting info
     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
     (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
     ;; initial flow-field to player
     ;(update-player-field! @world-state)
     ;; make a flow field for each box
-    (swap! flow-fields merge
+    (swap! flow-fields into
            (reduce
             #(assoc %1 %2 (utils/breadth-first #{%2} grid utils/neigh4 50))
             {}
@@ -494,7 +498,7 @@
         curr-val (get field coords)]
     ;;find the lowest-valued entry in field among neighbors of coords
     ;;if coords have no neightbors in field, return nil
-    (when-let [next-step (and
+    (when-let [next-step (and curr-val
                           (< curr-val dist)
                           (apply min-key field (neigh-fn field coords)))]
       ;; check if entity is already at field minimum
@@ -520,7 +524,6 @@
         box-todo (or (seq (:box-todo e)) (:boxes s))
         ;;min all fields of boxes on to do list
         field
-        #_(reduce #(merge-with min %1 (get f %2)) {} box-todo)
         (reduce #(merge2 min %1 (get f %2))
                 (get f (first box-todo)) (rest box-todo))
         #_(time (mergef min (map #(get f %) box-todo)))]

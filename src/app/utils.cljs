@@ -49,14 +49,6 @@
     (transient (first maps))
     (rest maps))))
 
-(defn tmerge [& maps]
-  (persistent!
-   (reduce
-    (fn [m-tr m2]
-      (reduce (fn [m [k v]] (assoc! m k v)) m-tr m2))
-    (transient (first maps))
-    (rest maps))))
-
 (defn rotate-grid [deg [x y] [w h] grid-map]
   (let [[s c rx ry] (case deg
                       90 [1 0 x (+ y h -1)] ;;cw
