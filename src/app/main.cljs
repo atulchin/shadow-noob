@@ -2,7 +2,7 @@
 (ns app.main
   (:require ["rot-js" :as rot]
             [clojure.core.async :as a :refer [>! <! put! go go-loop chan dropping-buffer]]
-            [app.world :as world :refer [world-state move-player! open-box! player-item!]]
+            [app.world :as world :refer [world-state move-player! player-interact!]]
             [app.drawcanvas :as draw :refer [init-disp! render-ui]]))
 
 ;; this file is for manipulating the user inteface & interacting w/ game state
@@ -71,9 +71,14 @@
    :foreground [:msg-panel]
    :log [] :running true})
 
-;; menu text for items defined in world/items
-(def item-text {:potion-speed "Potion of speed"
-                :scroll-teleport "Scroll of teleport"})
+;; menu text for keywords defined in world/items
+(def key-text {:potion-speed "Potion of speed"
+               :scroll-teleport "Scroll of teleport"
+               :closed-box "Closed box"
+               :open-box "Open box"
+               :open "Open"
+               :drink "Drink"
+               :read "Read"})
 
 ;; ui functions triggered from dialogs/menus; mutate the db
 (defn set-option! [& opts]
@@ -165,32 +170,58 @@
          :target (get-in @world-state [:entities :player :coords])
          :keychan target-chan :focused [:target-overlay 0] :background [:game-screen]))
 
-;; called when an inventory item is clicked
-(defn inv-click! [k]
+;; when interaction menu item is clicked
+(defn interact-click! [obj-key verb-key default-target]
   ;; if item requires target:
-  (if (:target (meta (get world/items k)))
+  (if (:target (meta (get-in world/item-fns [obj-key verb-key])))
     (do
       ;; transfer control to targeting interface
       (target-ui!)
       ;; spawn process that will wait for target info
       (go (let [targ-info (<! select-chan)]
             ;; if target provided, send use-item command to turn loop 
-            (when (seq targ-info) (put! control-chan #(player-item! k targ-info)))
+            (when (seq targ-info) (put! control-chan 
+                                        #(player-interact! obj-key verb-key targ-info)))
             )))
     ;; else, item doesn't require target:
     (do
       ;; give control back to game screen
       (game-screen!)
-      ;; send use-item command to turn loop, with empty map as target info
-      (put! control-chan #(player-item! k {}))
+      ;; send use-item command to turn loop, with default target info
+      (put! control-chan #(player-interact! obj-key verb-key default-target))
       ))
+  nil)
+
+;; generate a menu from an interaction hashmap
+(defn interact-comp [obj-key m targ-info]
+  (conj (into [{:id :label :pos 0 :type :button :txt (str "-- " (key-text obj-key) " --")}]
+              ;; keys are the verbs associated with obj
+              (map-indexed (fn [i [k _]]
+                             {:id k :pos (inc i) :type :button :txt (key-text k) 
+                              :effect #(interact-click! obj-key k targ-info)})
+                           m))
+        {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
+
+;; called when player interacts with item in inventory
+(defn item-menu! [obj-key]
+  ;;add/update menu in db
+  (swap! db update :ui-components assoc :interact-menu
+         ;; passing empty map as default target
+         (interact-comp obj-key (get world/item-fns obj-key) {}))
+  ;; transfer control to menu
+  (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
+  ;; force re-render to make menu appear
+  (render-ui @db)
+  ;; opening the menu isn't really an action, so return nil
   nil)
 
 ;; generate a menu from an inventory hashmap
 (defn inv-comp [m]
   (conj (into [{:id :label :pos 0 :type :button :txt "-- Items --"}]
+              ;; k is the item key, v is the quantity
               (map-indexed (fn [i [k v]]
-                             {:id k :pos (inc i) :type :button :txt (str (item-text k) " x" v) :effect #(inv-click! k)})
+                             {:id k :pos (inc i) :type :button :txt (str (key-text k) " x" v)
+                              :effect #(item-menu! k)})
                            m))
         {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
 
@@ -205,6 +236,22 @@
   (render-ui @db)
   ;; opening the menu isn't really an action, so return nil
   nil)
+
+;; called when player interacts with map location
+(defn interaction-menu! []
+  (let [targ-info (world/player-coord-info)]
+    ;;look for object at current map location
+    (when-let [obj-key (:obj targ-info)]
+      ;;add/update menu in db
+      (swap! db update :ui-components assoc :interact-menu
+             ;;passing map location as default target
+             (interact-comp obj-key (get world/item-fns obj-key) targ-info))
+      ;; transfer control to menu
+      (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
+      ;; force re-render to make menu appear
+      (render-ui @db)
+      ;; opening the menu isn't really an action, so return nil
+      nil)))
 
 (defn menu! []
   ;; transfer control to menu
@@ -254,8 +301,8 @@
              [:shift 39] #(move-player! 3)
              [40] #(move-player! 4)
              [:shift 40] #(move-player! 5)
-             [13] #(open-box!)
-             [32] #(open-box!)
+             [13] #(interaction-menu!)
+             [32] #(interaction-menu!)
              [27] #(menu!)
              [76] #(look!)
              [73] #(inventory-menu!)})

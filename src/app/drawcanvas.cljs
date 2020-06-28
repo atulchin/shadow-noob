@@ -37,7 +37,9 @@
                          "o" [0 [10 6]]
                          "u" [0 [11 6]]
                          "a" [0 [32 10]]
-                         "P" [0 [28 4]]}
+                         "P" [0 [28 4]]
+                         ;"x" [0 [0 2]]
+                         }
                  :icons {:player "@"
                          :floor "."
                          :grass ","
@@ -53,7 +55,9 @@
                          :closed-box "o"
                          :open-box "u"
                          :ananas "a"
-                         :pedro "P"}})
+                         :pedro "P"
+                         ;:can-spot "x"
+                         }})
 
 (defn reset-defaults []
   (swap! context merge defaults))
@@ -182,16 +186,14 @@
   (draw-rect ctx [0 0] dims (conj bg-col 0.6)))
 
 ;;draws a named object to xy coords contained in k
-(defn- draw-coords [d-context clear? [k v]]
-  (let [{:keys [ctx tiles tilemap icons grid-start]} d-context
-        xy (screen-coords k grid-start)
-        [set-idx tile-coords] (get tilemap (get icons v))
-        {:keys [offsets grabdims img]} (get tiles set-idx)
-        sxy (mapv * offsets tile-coords)
-        ]
-    (when clear? (clear-tile ctx xy TILE-DIMS))
-    (draw-tile ctx img sxy grabdims xy TILE-DIMS)
-    ))
+(defn- draw-coords [{:keys [ctx tiles tilemap icons grid-start]} clear? [k v]]
+  (when-let [[set-idx tile-coords] (get tilemap (get icons v))]
+    (let [{:keys [offsets grabdims img]} (get tiles set-idx)
+          xy (screen-coords k grid-start)
+          sxy (mapv * offsets tile-coords)]
+      (when clear? (clear-tile ctx xy TILE-DIMS))
+      (draw-tile ctx img sxy grabdims xy TILE-DIMS)
+      )))
 
 ;;draws a map of key-value pairs where each key is [x y] coords
 ;;  each value is a keyword
@@ -236,12 +238,14 @@
     ;;draw previously seen areas first
     (draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
     (draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
+    (draw-mkvs d-context false (select-keys (:obj world-state) seen-set))
     ;;shade the entire screen, will be cleared in visible areas
     (draw-dark d-context)
 
     ;;then draw over those with currently visible area
     (draw-mkvs d-context true (select-keys (:grid world-state) viskeys))
     (draw-mkvs d-context false (select-keys (:decor world-state) viskeys))
+    (draw-mkvs d-context false (select-keys (:obj world-state) viskeys))
     (draw-light d-context (:visible world-state))
     ;(draw-shadow d-context (:visible world-state))
     ;(draw-light d-context (select-keys (:light world-state) viskeys))
@@ -295,9 +299,11 @@
 ;; :data fn is world/get-info
 (defmethod draw-element :target-info [{:keys [pos data]} _ {:keys [ctx]}]
   (let [;; get target coords and world state
-        {:keys [coords grid seen? visible? entities]} (data)
+        {:keys [coords grid obj seen? visible? entities]} (data)
         ;; TODO - figure out where text descriptions should live
-        txt (str coords " " (when seen? grid) " " (when visible? entities))
+        txt (str coords " " (when seen? grid)
+                 " " (when seen? obj)
+                 " " (when visible? entities))
         ]
     (set! (. ctx -font) "16px monospace")
     (draw-text ctx txt (mapv * TILE-DIMS pos) [255 255 255])
