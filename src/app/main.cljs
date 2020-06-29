@@ -5,6 +5,10 @@
             [app.world :as world :refer [world-state move-player! player-interact!]]
             [app.drawcanvas :as draw :refer [init-disp! render-ui]]))
 
+;; **
+;; ** TODO: don't access @world-state directly **
+;; **
+
 ;; this file is for manipulating the user inteface & interacting w/ game state
 ;; TODO: game logic also lives here for now, may move it
 (declare game-rules! game-options!)
@@ -173,7 +177,7 @@
 ;; when interaction menu item is clicked
 (defn interact-click! [obj-key verb-key default-target]
   ;; if item requires target:
-  (if (:target (meta (get-in world/item-fns [obj-key verb-key])))
+  (if (world/target-required? obj-key verb-key)
     (do
       ;; transfer control to targeting interface
       (target-ui!)
@@ -193,21 +197,21 @@
   nil)
 
 ;; generate a menu from an interaction hashmap
-(defn interact-comp [obj-key m targ-info]
-  (conj (into [{:id :label :pos 0 :type :button :txt (str "-- " (key-text obj-key) " --")}]
+(defn interact-comp [obj-key title m targ-info]
+  (conj (into [{:id :label :pos 0 :type :button :txt (str "-- " title " --")}]
               ;; keys are the verbs associated with obj
-              (map-indexed (fn [i [k _]]
+              (map-indexed (fn [i k]
                              {:id k :pos (inc i) :type :button :txt (key-text k) 
                               :effect #(interact-click! obj-key k targ-info)})
                            m))
         {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
 
 ;; called when player interacts with item in inventory
-(defn item-menu! [obj-key]
+(defn item-menu! [obj-key title]
   ;;add/update menu in db
   (swap! db update :ui-components assoc :interact-menu
          ;; passing empty map as default target
-         (interact-comp obj-key (get world/item-fns obj-key) {}))
+         (interact-comp obj-key title (world/valid-verbs :player obj-key) {}))
   ;; transfer control to menu
   (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
   ;; force re-render to make menu appear
@@ -218,10 +222,10 @@
 ;; generate a menu from an inventory hashmap
 (defn inv-comp [m]
   (conj (into [{:id :label :pos 0 :type :button :txt "-- Items --"}]
-              ;; k is the item key, v is the quantity
-              (map-indexed (fn [i [k v]]
-                             {:id k :pos (inc i) :type :button :txt (str (key-text k) " x" v)
-                              :effect #(item-menu! k)})
+              ;; k is the object key, v is a map containing :type and :qty
+              (map-indexed (fn [i [k {t :type q :qty}]]
+                             {:id k :pos (inc i) :type :button :txt (str (key-text t) " x" q)
+                              :effect #(item-menu! k (key-text t))})
                            m))
         {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
 
@@ -229,7 +233,7 @@
 (defn inventory-menu! []
   ;;add/update menu in db
   (swap! db update :ui-components assoc :inv-menu
-         (inv-comp (get-in @world-state [:entities :player :inv])))
+         (inv-comp (world/inventory :player)))
   ;; transfer control to menu
   (swap! db assoc :keychan dialog-chan :focused [:inv-menu 0] :background [:game-screen])
   ;; force re-render to make menu appear
@@ -245,7 +249,7 @@
       ;;add/update menu in db
       (swap! db update :ui-components assoc :interact-menu
              ;;passing map location as default target
-             (interact-comp obj-key (get world/item-fns obj-key) targ-info))
+             (interact-comp obj-key (key-text obj-key) (world/valid-verbs :player obj-key) targ-info))
       ;; transfer control to menu
       (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
       ;; force re-render to make menu appear

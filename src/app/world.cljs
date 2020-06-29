@@ -23,16 +23,18 @@
                  :items {}
                  :seen #{}
                  :visible {}
-                 ;:light {}
+                 :light {}
                  :light-sources {}
                  :entities {:player {:id :player :type :local-player
                                      :fov-fn :fov-player :vision 6
                                      :move-time 10 :diag 1.4
-                                     :inv {:potion-speed 1 :scroll-teleport 2}}
+                                     :inv #{:a :b}}
                             :pedro {:id :pedro :type :npc
                                     :fov-fn :fov-90 :vision 5
                                     :move-time 10 :diag 2.0
                                     :action #(chase! :pedro :player 10 4)}}
+                 :keymap {:a {:type :potion-speed :inv :player :qty 1}
+                          :b {:type :scroll-teleport :inv :player :qty 2}}
                  :time 0
                  :status {}
                  :effects #{}})
@@ -48,6 +50,7 @@
    :time (:time s)
    :grid (get (:grid s) coords)
    :obj (get (:obj s) coords)
+   :items (get (:items s) coords)
    :seen? (contains? (:seen s) coords)
    :visible? (contains? (:visible s) coords)
    :entities (map :id (filter #(= coords (:coords %))
@@ -96,14 +99,19 @@
     (reduce #(apply update %1 (get effects %2)) entity-record e-fx)))
 
 ;; items
-(defn add-item [state entity-key item-key]
-  (update-in state [:entities entity-key :inv item-key] inc))
+(defn inventory [ent-key]
+  (let [{:keys [keymap] :as s} @world-state
+        inv (get-in s [:entities ent-key :inv])]
+    (map (juxt identity keymap) inv)))
 
-(defn remove-item [state entity-key item-key]
-  (let [qty (dec (get-in state [:entities entity-key :inv item-key]))]
-    (if (< qty 1)
-      (update-in state [:entities entity-key :inv] dissoc item-key)
-      (assoc-in state [:entities entity-key :inv item-key] qty))))
+(defn consume-item [s obj-key]
+  (if (> (get-in s [:keymap obj-key :qty]) 1)
+    (update-in s [:keymap obj-key :qty] dec)
+    ;;qty not > 1
+    (let [owner (get-in s [:keymap obj-key :inv])]
+      (-> s
+          (update-in [:entities owner :inv] disj obj-key)
+          (update-in [:keymap] dissoc obj-key)))))
 
 (defn teleport [state entity-key target-info]
   (let [target-key (first (:entities target-info))
@@ -137,35 +145,73 @@
       (-> s
           (assoc-in [:obj coords] :open-box)
           (assoc :ananas (if ananas? [] ananas-coords))
-          (assoc :status {:ananas ananas? :dt 10}))
-      )))
+          (assoc :status {:ananas ananas? :dt 10})))))
 
-;; item values are functions of world-state, entity-key, and
-;;   target-info (as returned by get-info)
-;; metadata {:target true} if item requires a target
-(def item-fns
-  {:potion-speed {:drink
-                  (fn [state k _] (-> state
-                                      (add-effect k :speed 100)
-                                      (remove-item k :potion-speed)
-                                      (assoc :status {:entity k :drink :potion-speed :dt 10})
-                                      ))}
-   :scroll-teleport {:read ^:target
-                     (fn [state k t] (-> state
-                                         (teleport k t)
-                                         (remove-item k :scroll-teleport)
-                                         (assoc :status {:entity k :read :scroll-teleport :dt 10})
-                                         ))}
-   :closed-box {:open (fn [s k t] (open-box s k t))}
+(defn item-used-fn [{:keys [consumed obj-key obj-type verb]}]
+  (fn [state]
+    (cond-> state
+      consumed (consume-item obj-key)
+      :always (assoc :status {verb obj-type :dt 10}))))
+
+(defn add-effect-fn [{:keys [entity-key effect duration]}]
+  (fn [state]
+    (add-effect state entity-key effect duration)))
+
+(defn entity-target-fn [{:keys [entity-key target function]}]
+  (fn [state]
+    (function state entity-key target)))
+
+;; verb functions must return a fn that takes state as its only argument
+(def item-defs
+  {:potion-speed
+   ^{:effect :speed :duration 100}
+   {:parent :potion :drink add-effect-fn}
+
+   :scroll-teleport
+   ^{:function teleport}
+   {:parent :scroll :read entity-target-fn}
+
+   :closed-box
+   ^{:function open-box}
+   {:verbs #{:open} :open entity-target-fn}
+
+   :potion ^:consumed {:verbs #{:drink} :drink item-used-fn}
+
+   :scroll ^:consumed {:verbs #{:read} :read item-used-fn}
    })
 
-(defn interact! [entity-key obj verb targ-m]
-  (when-let [f (get-in item-fns [obj verb])]
-    (when-let [s' (f @world-state entity-key targ-m)]
+(def target-req {[:scroll-teleport :read] true})
+
+(defn valid-verbs [ent-key obj-key]
+  (let [t (get-in (:keymap @world-state) [obj-key :type])]
+    (loop [v #{}
+           i (item-defs t)]
+      (if-let [p (:parent i)]
+        (recur (into v (:verbs i)) (item-defs p))
+        (into v (:verbs i))))))
+
+(defn target-required? [obj-key verb-key]
+  (let [t (get-in (:keymap @world-state) [obj-key :type])]
+    (target-req [t verb-key])))
+
+(defn- interaction-fns [ent-key obj-key verb targ]
+  (let [t (get-in (:keymap @world-state) [obj-key :type])]
+    (loop [fcoll []
+           i (item-defs t)]
+      (let [m (into
+               {:entity-key ent-key :obj-key obj-key :target targ :verb verb :obj-type t}
+               (meta i))
+            f ((get i verb) m)]
+        (if-let [p (:parent i)]
+          (recur (conj fcoll f) (item-defs p))
+          (conj fcoll f))))))
+
+(defn interact! [ent-key obj-key verb targ]
+  (let [f (apply comp (interaction-fns ent-key obj-key verb targ))
+        s' (f @world-state)]
+    (when s'
       (reset! world-state s')
-      ;;return status
-      (:status s')
-      )))
+      (:status s'))))
 
 (defn player-interact! [obj verb targ-m]
   (interact! :player obj verb targ-m))
@@ -342,25 +388,24 @@
 ;; moves player in a given grid direction
 ;;   returns updated world state if player was moved, otherwise nil
 #_(defn move-player [s d]
-  (let [player-record (get-in s [:entities :player])
-        new-coords (mapv + (:coords player-record) (dirs d))]
+    (let [player-record (get-in s [:entities :player])
+          new-coords (mapv + (:coords player-record) (dirs d))]
     ;;update state only if new coords are on the grid
-    (when (contains? (:grid s) new-coords)
-      (let [updated-player (move-entity player-record new-coords)]
+      (when (contains? (:grid s) new-coords)
+        (let [updated-player (move-entity player-record new-coords)]
         ;; update player info and world vis map
-        (-> s
-            (assoc-in [:entities :player] updated-player)
-            (update-vis (:fov updated-player))
-            (assoc :status {:move new-coords :dt (move-time (apply-effects s updated-player))}))
-        ))))
+          (-> s
+              (assoc-in [:entities :player] updated-player)
+              (update-vis (:fov updated-player))
+              (assoc :status {:move new-coords :dt (move-time (apply-effects s updated-player))}))))))
 
 #_(defn move-player! [d]
-  (when-let [s' (move-player @world-state d)]
-    (reset! world-state s')
+    (when-let [s' (move-player @world-state d)]
+      (reset! world-state s')
     ;;player coords changed, so update flow field
     ;(update-player-field! s')
     ;;return status
-    (:status s')))
+      (:status s')))
 
 (defn move-player! [d]
   (let [s @world-state
@@ -375,13 +420,11 @@
                       #(-> %
                            (assoc-in [:entities :player] updated-info)
                            (update-vis (:fov updated-info))
-                           (assoc :status {:move new-coords :dt dt})
-                           ))]
+                           (assoc :status {:move new-coords :dt dt})))]
         ;;player coords changed, so update flow field
         ;(update-player-field! s')
         ;;return status
-        (:status s')
-        ))))
+        (:status s')))))
 
 ;; start and destination are coord pairs
 ;;   topo = # of movement directions
