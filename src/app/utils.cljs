@@ -78,12 +78,12 @@
 ;;  white = undiscovered: not marked, not in queue
 ;;  gray = frontier: marked but still in queue
 ;;  black = done; marked and no longer in queue
-(defn breadth-first [init-set node-map neigh-fn max-dist]
+(defn breadth-first [init-set node-set neigh-fn max-dist]
   ;;start with intial (root) nodes marked and in the queue (starting frontier)
   (loop [todo (into #queue[] init-set)
          ;;inital nodes are marked with a value of 0
          marked (transient (zipmap init-set (repeat 0)))
-         unmarked (transient (apply disj (set (keys node-map)) init-set))
+         unmarked (transient (apply disj node-set init-set))
          dist 0]
     (if (or (> dist max-dist) (empty? todo))
       (persistent! marked) ;;done

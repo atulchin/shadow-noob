@@ -149,6 +149,11 @@
   (set! (. ctx -fillStyle) (color-str color))
   (.fillText ctx txt x y))
 
+(defn- clear-canvas [d-context]
+  (let [{:keys [ctx dims]} d-context
+        [w h] dims]
+    (.clearRect ctx 0 0 w h)))
+
 ;;draws a yellow glow based on k-v data
 ;;  keys are coords; vals are light intensity
 (defn draw-glow [d-context mkvs]
@@ -198,7 +203,7 @@
 ;;draws a map of key-value pairs where each key is [x y] coords
 ;;  each value is a keyword
 ;;  doseq iterates through k-v pairs
-(defn- draw-mkvs [d-context clear? mkvs]
+#_(defn- draw-mkvs [d-context clear? mkvs]
   (doseq [m mkvs]
     (draw-coords d-context clear? m)))
 
@@ -215,10 +220,17 @@
     (when-not (= id :player) (draw-glow d-context fov))
     ))
 
-(defn- clear-canvas [d-context]
-  (let [{:keys [ctx dims]} d-context
-        [w h] dims]
-    (.clearRect ctx 0 0 w h)))
+;; keys in m are coords
+;; vals are maps containing keywords to draw
+(defn- draw-map [d-context keymap m]
+  (doseq [[coords {:keys [base decor items]}] m]
+    (let [item-keys (map #(get-in keymap [% :type]) items)]
+      (draw-coords d-context true [coords base])
+      (draw-coords d-context false [coords decor])
+      (draw-coords d-context false [coords (last item-keys)])
+      )
+    )
+  )
 
 ;; draws grid and entities
 ;;   in the "visible" area of the world grid only
@@ -233,23 +245,26 @@
         
         viskeys (set (keys (:visible world-state)))
         visible-entities (filter #(contains? viskeys (:coords %))
-                                 (vals (:entities world-state)))]
+                                 (vals (:entities world-state)))
+        keymap (:keymap world-state)]
 
     ;;draw previously seen areas first
-    (draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
-    (draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
-    (draw-mkvs d-context false (select-keys (:obj world-state) seen-set))
+    #_(time) (draw-map d-context keymap (select-keys (:coord-map world-state) seen-set))
+    ;(draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
+    ;(draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
+    ;(draw-mkvs d-context false (select-keys (:obj world-state) seen-set))
     ;;shade the entire screen, will be cleared in visible areas
-    (draw-dark d-context)
+    #_(time) (draw-dark d-context)
 
     ;;then draw over those with currently visible area
-    (draw-mkvs d-context true (select-keys (:grid world-state) viskeys))
-    (draw-mkvs d-context false (select-keys (:decor world-state) viskeys))
-    (draw-mkvs d-context false (select-keys (:obj world-state) viskeys))
-    (draw-light d-context (:visible world-state))
+    #_(time) (draw-map d-context keymap (select-keys (:coord-map world-state) viskeys))
+    ;(draw-mkvs d-context true (select-keys (:grid world-state) viskeys))
+    ;(draw-mkvs d-context false (select-keys (:decor world-state) viskeys))
+    ;(draw-mkvs d-context false (select-keys (:obj world-state) viskeys))
+    #_(time) (draw-light d-context (:visible world-state))
     ;(draw-shadow d-context (:visible world-state))
     ;(draw-light d-context (select-keys (:light world-state) viskeys))
-
+    
     ;;draw entities whose coords are in the visible area
     (doseq [e visible-entities]
       (draw-entity d-context e))))
@@ -299,10 +314,10 @@
 ;; :data fn is world/get-info
 (defmethod draw-element :target-info [{:keys [pos data]} _ {:keys [ctx]}]
   (let [;; get target coords and world state
-        {:keys [coords grid obj seen? visible? entities]} (data)
+        {:keys [coords base items seen? visible? entities]} (data)
         ;; TODO - figure out where text descriptions should live
-        txt (str coords " " (when seen? grid)
-                 " " (when seen? obj)
+        txt (str coords " " (when seen? base)
+                 " " (when seen? items)
                  " " (when visible? entities))
         ]
     (set! (. ctx -font) "16px monospace")

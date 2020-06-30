@@ -1,7 +1,7 @@
 
 (ns app.worldGen
   (:require ["rot-js" :as rot]
-            [app.utils :as utils :refer [idiv split-int rotate-grid]]))
+            [app.utils :as utils :refer [idiv split-int rotate-grid mergef]]))
 
 (defn- noise-fn []
   (let [n (rot/Noise.Simplex.)]
@@ -15,11 +15,10 @@
 (defn- digger-callback [grid-ref]
   (fn [x y v]
     (if (= v 1) ;;1 = wall
-      (swap! grid-ref #(-> %
-                           (assoc-in [:decor [x y]] :wall)
-                           (update :grid dissoc [x y])))
+      (swap! grid-ref assoc [x y] {:decor :wall})
       ;;store only passable spaces in :grid
-      (swap! grid-ref assoc-in [:grid [x y]] :floor))))
+      (swap! grid-ref assoc [x y] {:base :floor :transparent :true})
+      )))
 
 (defmulti split-zone :type)
 
@@ -96,28 +95,26 @@
 (defn- plot-tiles [[x y] [w h]]
   (let [bldg-h (min (max 4 (idiv h 3)) 9)
         yard-h (min (max 2 (idiv (- h bldg-h) 3)) 7)]
-    {:grid
-     (-> {}
-         (into (fill-gridf #(if (< 0.6 (noise2d %1 %2 5)) :tree :empty)
-                           (range x (+ x w)) (range y (+ y h))))
-         (into (fill-grid :empty (range (inc x) (+ x w -1)) (range y (+ y yard-h -1))))
-         (into (fill-gridf #(if (> 0.0 (noise2d %1 %2 10)) :flowers :empty)
-                           (range (inc x) (+ x w -1)) (range (+ y yard-h -1) (+ y yard-h))))
-         (into (fill-grid :path [(+ x (quot w 2))]  (range y (+ y yard-h))))
-         (clear-grid (range (inc x) (+ x w -1)) (range (+ y yard-h) (+ y yard-h bldg-h))))
-     :decor
-     (-> {}
-         (into (fill-grid :wall (range (inc x) (+ x w -1)) (range (+ y yard-h) (+ y yard-h bldg-h))))
-         (assoc [(+ x (quot w 2)) (+ y yard-h)] :door
-                [(+ x (quot w 2) (+ -1 (* 2 (rand-int 2)))) (dec y)] :can-spot))}))
+    (mergef into
+            (-> {}
+                (into (fill-gridf #(if (< 0.6 (noise2d %1 %2 5)) {:base :tree :transparent false} {:base :empty :transparent true})
+                                  (range x (+ x w)) (range y (+ y h))))
+                (into (fill-grid {:base :empty :transparent true} (range (inc x) (+ x w -1)) (range y (+ y yard-h -1))))
+                (into (fill-gridf #(if (> 0.0 (noise2d %1 %2 10)) {:base :flowers :transparent true} {:base :empty :transparent true})
+                                  (range (inc x) (+ x w -1)) (range (+ y yard-h -1) (+ y yard-h))))
+                (into (fill-grid {:base :path :transparent true} [(+ x (quot w 2))]  (range y (+ y yard-h))))
+                (clear-grid (range (inc x) (+ x w -1)) (range (+ y yard-h) (+ y yard-h bldg-h))))
+
+            (-> {}
+                (into (fill-grid {:decor :wall} (range (inc x) (+ x w -1)) (range (+ y yard-h) (+ y yard-h bldg-h))))
+                (assoc [(+ x (quot w 2)) (+ y yard-h)] {:decor :door}
+                       [(+ x (quot w 2) (+ -1 (* 2 (rand-int 2)))) (dec y)] {:decor :can-spot})))
+    ))
+
 (defn- road-tiles [[x y] [w h]]
-  {:grid (-> {}
-             (into (fill-grid :floor (range x (+ x w)) (range y (+ y h)))))
-   :decor {}})
+  (fill-grid {:base :floor :transparent true} (range x (+ x w)) (range y (+ y h))))
 (defn- sidewalk-tiles [[x y] [w h]]
-  {:grid (-> {}
-             (into (fill-grid :path (range x (+ x w)) (range y (+ y h)))))
-   :decor {}})
+  (fill-grid {:base :path :transparent true} (range x (+ x w)) (range y (+ y h))))
 
 (defmulti zone-to-tiles :type)
 (defmethod zone-to-tiles :default [_] nil)
@@ -125,24 +122,21 @@
 (defmethod zone-to-tiles :r-ew [{:keys [coords dims]}] (road-tiles coords dims))
 
 (defmethod zone-to-tiles :s-n [{:keys [coords dims]}]
-  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords [-1 0])] :street-light))
+  (assoc-in (sidewalk-tiles coords dims) [(mapv + coords [-1 0]) :decor] :street-light))
 (defmethod zone-to-tiles :s-s [{:keys [coords dims]}]
-  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords dims [0 -1])] :street-light))
+  (assoc-in (sidewalk-tiles coords dims) [(mapv + coords dims [0 -1]) :decor] :street-light))
 (defmethod zone-to-tiles :s-w [{:keys [coords dims]}]
-  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords [0 -1])] :street-light))
+  (assoc-in (sidewalk-tiles coords dims) [(mapv + coords [0 -1]) :decor] :street-light))
 (defmethod zone-to-tiles :s-e [{:keys [coords dims]}]
-  (assoc-in (sidewalk-tiles coords dims) [:decor (mapv + coords dims [-1 0])] :street-light))
+  (assoc-in (sidewalk-tiles coords dims) [(mapv + coords dims [-1 0]) :decor] :street-light))
 
 (defmethod zone-to-tiles :plot-n [{:keys [coords dims]}] (plot-tiles coords dims))
 (defmethod zone-to-tiles :plot-s [{:keys [coords dims]}]
-  ;; k is :grid or :decor, v is coord map
-  (reduce-kv #(assoc %1 %2 (rotate-grid 180 coords dims %3)) {} (plot-tiles coords dims)))
+  (rotate-grid 180 coords dims (plot-tiles coords dims)))
 (defmethod zone-to-tiles :plot-w [{:keys [coords dims]}]
-  (let [[w h] dims]
-    (reduce-kv #(assoc %1 %2 (rotate-grid 270 coords [h w] %3)) {} (plot-tiles coords [h w]))))
+  (let [[w h] dims] (rotate-grid 270 coords [h w] (plot-tiles coords [h w]))))
 (defmethod zone-to-tiles :plot-e [{:keys [coords dims]}]
-  (let [[w h] dims]
-    (reduce-kv #(assoc %1 %2 (rotate-grid 90 coords [h w] %3)) {} (plot-tiles coords [h w]))))
+  (let [[w h] dims] (rotate-grid 90 coords [h w] (plot-tiles coords [h w]))))
 
 (defn- gen-zone-town [dims]
   (tree-seq #(#{:v :h :lot-n :lot-s :lot-e :lot-w} (:type %))
@@ -153,24 +147,32 @@
   (let [town (gen-zone-town [w h])
         roads (filter #(#{:r-ns :r-ew} (:type %)) town)
         non-road (remove #(#{:r-ns :r-ew} (:type %)) town)
-        grid (time (apply merge-with into
-                          (concat
-                           (keep zone-to-tiles non-road)
+        coord-map (time (apply merge-with into
+                               (concat
+                                (keep zone-to-tiles non-road)
                            ;;do roads last to overwite sidewalks
-                           (keep zone-to-tiles roads))))]
+                                (keep zone-to-tiles roads))))]
     ;;wall shadows:
-    (update grid :decor
-            (fn [m] (into
-                     (reduce-kv #(if (= %3 :wall)
-                                   (assoc %1 (mapv + %2 [0 1]) :wall-s)
-                                   %1) {} m)
-                     m)))))
+    ;; coord-map looks like {[10 20] {:base :empty :decor :wall} [11 20] {:base :emtpy :decor nil} ...}
+    (reduce-kv (fn [init coords {:keys [decor]}]
+                 (let [coords-s (mapv + coords [0 1])]
+                            ;; if current coords have a wall and nothing to the south
+                   (if (and (= decor :wall)
+                            (nil? (get-in coord-map [coords-s :decor])))
+                              ;; then add a wall to the south
+                     (assoc-in init [coords-s :decor] :wall-s)
+                              ;; else continue w/ unmodified map
+                     init)))
+               coord-map ;;start with coord-map 
+               coord-map ;;go through all k-v pairs in coord map
+               )
+    ))
 
 ;; create a temporary mutable ref for the rot-js map generator to use
 ;;   then return an ordinary clj hashmap
 (defn generate-dungeon-grid [[w h]]
   (let [rot-digger (rot/Map.Digger. w h)
-        grid-ref (atom {:grid {} :decor {}})]
+        grid-ref (atom {})]
     (.create rot-digger (digger-callback grid-ref))
     ;(.create rot-digger)
     ;;for rooms, .create includes walls
@@ -178,11 +180,20 @@
     ;;but not for corridors
     ;(doseq [r (.getCorridors rot-digger)] (.create r (digger-callback grid-ref)))
     ;;wall shadows:
-    (swap! grid-ref update :decor
-           (fn [m] (into
-                    (reduce-kv #(if (= %3 :wall)
-                                  (assoc %1 (mapv + %2 [0 1]) :wall-s)
-                                  %1) {} m)
-                    m)))
+    ;; coord-map looks like {[10 20] {:base :empty :decor :wall} [11 20] {:base :emtpy :decor nil} ...}
+    (swap! grid-ref
+           (fn [m]
+             (reduce-kv (fn [init coords {:keys [decor]}]
+                          (let [coords-s (mapv + coords [0 1])]
+                            ;; if current coords have a wall and nothing to the south
+                            (if (and (= decor :wall)
+                                     (nil? (get-in m [coords-s :decor])))
+                              ;; then add a wall to the south
+                              (assoc-in init [coords-s :decor] :wall-s)
+                              ;; else continue w/ unmodified map
+                              init)))
+                        m ;;start with coord-map 
+                        m ;;go through all k-v pairs in coord map
+                        )))
     @grid-ref))
 

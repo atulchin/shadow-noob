@@ -245,11 +245,11 @@
 (defn interaction-menu! []
   (let [targ-info (world/player-coord-info)]
     ;;look for object at current map location
-    (when-let [obj-key (:obj targ-info)]
+    (when-let [obj-key (last (keys (:items targ-info)))]
       ;;add/update menu in db
       (swap! db update :ui-components assoc :interact-menu
              ;;passing map location as default target
-             (interact-comp obj-key (key-text obj-key) (world/valid-verbs :player obj-key) targ-info))
+             (interact-comp obj-key (key-text (get-in (:items targ-info) [obj-key :type])) (world/valid-verbs :player obj-key) targ-info))
       ;; transfer control to menu
       (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
       ;; force re-render to make menu appear
@@ -273,10 +273,10 @@
   (render-ui @db)
   ;; spawn process that will read target selection
   ;;   just send to log for now
-  (go (let [{:keys [coords seen? visible? grid entities time]} (<! select-chan)]
+  (go (let [{:keys [coords seen? visible? base entities time]} (<! select-chan)]
         (when seen?
           (swap! db update :log conj
-                 {:msg (str coords " " (when seen? grid) " " (when visible? entities))
+                 {:msg (str coords " " (when seen? base) " " (when visible? entities))
                   :time time})
           (render-ui @db))
         ))

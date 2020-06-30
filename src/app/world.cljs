@@ -3,7 +3,7 @@
   (:require ["rot-js" :as rot]
             [clojure.set :as set]
             [app.worldGen :as worldGen :refer [generate-town-grid]]
-            [app.utils :as utils :refer [assoc-multi update-all sample merge2 mergef]]))
+            [app.utils :as utils :refer [update-multi update-all sample merge2 mergef]]))
 
 (declare chase! compute-fov update-vis)
 
@@ -17,24 +17,25 @@
 ;;    :action is any function that gets called on the entity's turn
 ;;    -- it is not really an "act" method
 (defonce world-state (atom {}))
-(def init-state {:grid {}
-                 :decor {}
-                 :obj {}
-                 :items {}
+(def init-state {;;walkable grid coords for pathfinding
+                 :grid #{}
+                 ;;other coord info
+                 :coord-map {} ;[0 0] {:base nil :decor nil :items #{} :transparent nil}
                  :seen #{}
                  :visible {}
-                 :light {}
+                 :light {} ;;static light map
                  :light-sources {}
                  :entities {:player {:id :player :type :local-player
                                      :fov-fn :fov-player :vision 6
                                      :move-time 10 :diag 1.4
-                                     :inv #{:a :b}}
+                                     :items #{:a :b}}
                             :pedro {:id :pedro :type :npc
                                     :fov-fn :fov-90 :vision 5
                                     :move-time 10 :diag 2.0
                                     :action #(chase! :pedro :player 10 4)}}
-                 :keymap {:a {:type :potion-speed :inv :player :qty 1}
-                          :b {:type :scroll-teleport :inv :player :qty 2}}
+                 :keymap {:a {:type :potion-speed :inv [:entities :player :items] :qty 1}
+                          :b {:type :scroll-teleport :inv [:entities :player :items] :qty 2}
+                          :boxc {:type :closed-box} :boxo {:type :open-box}}
                  :time 0
                  :status {}
                  :effects #{}})
@@ -45,16 +46,21 @@
   (reset! flow-fields {})
   (reset! world-state init-state))
 
-(defn- coord-info [s coords]
-  {:coords coords
-   :time (:time s)
-   :grid (get (:grid s) coords)
-   :obj (get (:obj s) coords)
-   :items (get (:items s) coords)
-   :seen? (contains? (:seen s) coords)
-   :visible? (contains? (:visible s) coords)
-   :entities (map :id (filter #(= coords (:coords %))
-                              (vals (:entities s))))})
+(defn items [keymap obj-keys]
+  (into {} (map (juxt identity keymap) obj-keys)))
+
+(defn- coord-info [{g :grid c :coord-map s :seen v :visible t :time e :entities km :keymap} coords]
+  (let [m (get c coords)]
+    (into m
+          {:coords coords
+           :items (items km (:items m))
+           :time t
+           :grid (contains? g coords)
+           :seen? (contains? s coords)
+           :visible? (contains? v coords)
+           :entities (map :id (filter #(= coords (:coords %))
+                                      (vals e)))}
+          )))
 
 (defn get-info [coords] (coord-info @world-state coords))
 
@@ -101,16 +107,16 @@
 ;; items
 (defn inventory [ent-key]
   (let [{:keys [keymap] :as s} @world-state
-        inv (get-in s [:entities ent-key :inv])]
-    (map (juxt identity keymap) inv)))
+        inv (get-in s [:entities ent-key :items])]
+    (items keymap inv)))
 
 (defn consume-item [s obj-key]
   (if (> (get-in s [:keymap obj-key :qty]) 1)
     (update-in s [:keymap obj-key :qty] dec)
     ;;qty not > 1
-    (let [owner (get-in s [:keymap obj-key :inv])]
+    (let [owner-kvec (get-in s [:keymap obj-key :inv])]
       (-> s
-          (update-in [:entities owner :inv] disj obj-key)
+          (update-in owner-kvec disj obj-key)
           (update-in [:keymap] dissoc obj-key)))))
 
 (defn teleport [state entity-key target-info]
@@ -121,7 +127,7 @@
         ;; otherwise, set location to random grid loc
         loc (if (and (nil? target-key) (:grid target-info))
               (:coords target-info)
-              (rand-nth (keys (:grid state))))
+              (rand-nth (seq (:grid state))))
         ;; change loc of target entity
         s' (assoc-in state [:entities t :coords] loc)
         fov (compute-fov (entity-with-effects s' t))
@@ -141,9 +147,10 @@
   (let [coords (:coords targ-m)
         ananas-coords (:ananas s)
         ananas? (= coords ananas-coords)]
-    (when (= (:obj targ-m) :closed-box)
+    (when (contains? (:items targ-m) :boxc)
       (-> s
-          (assoc-in [:obj coords] :open-box)
+          (update-in [:coord-map coords :items] disj :boxc)
+          (update-in [:coord-map coords :items] conj :boxo)
           (assoc :ananas (if ananas? [] ananas-coords))
           (assoc :status {:ananas ananas? :dt 10})))))
 
@@ -220,16 +227,13 @@
 ;;   convert to clj vector
 (def dirs (get (js->clj (. rot -DIRS)) "8"))
 
-(def light-blockers #{:tree})
+(defn transparent? [coord-map coords]
+  (get-in coord-map [coords :transparent]))
 
-(defn transparent? [grid coords]
-  (let [v (get grid coords)]
-    (and v (not (contains? light-blockers v)))))
-
-(defn compute-light [grid dist light-sources]
+(defn compute-light [coord-map dist light-sources]
   (let [light-fov (rot/FOV.PreciseShadowcasting.
                   ;;squares with light source are automatically transparent
-                   #(or (transparent? grid [%1 %2]) (contains? light-sources [%1 %2]))
+                   #(or (transparent? coord-map [%1 %2]) (contains? light-sources [%1 %2]))
                   ;#js{:topology 8}
                    )
         light (rot/Lighting.
@@ -237,7 +241,7 @@
                #js{:range (inc dist) :passes 1})
         data-ref (atom {})
        ;;recursive fov for shaping the light
-        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? coord-map [%1 %2]))
        ;;light sources are auto included
         fov-ref (atom (set (keys light-sources)))]
     (.setFOV light light-fov)
@@ -255,15 +259,16 @@
     @data-ref))
 
 ;; fov map with coord keys and distance values
-(defn fovmax [grid [x y]]
+(defn fovmax [coord-map [x y]]
   (let [data-ref (atom {})
         MAX-DIST 60
-        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))]
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? coord-map [%1 %2]))]
     (.compute FOV-R x y MAX-DIST #(swap! data-ref assoc [%1 %2] %3))
     @data-ref))
 
 
 ;; TODO -- should pass state to compute-fov instead of derefing inside
+
 
 ;; fov computation: takes an entity record
 ;; multimehtod dispatch based on :fov-fn
@@ -274,18 +279,18 @@
 ;; and sight-map to player
 (defmethod compute-fov :fov-player [{[x y] :coords vision :vision}]
   ;; create a tmp mutable ref for callback fn, then return clj data struct
-  (let [{:keys [grid light]} @world-state
+  (let [{:keys [grid coord-map light]} @world-state
         vismap (mergef
                 #(mapv max %1 %2)
                 ;; player emits neutral light for fov and shadow effect
-                (compute-light grid vision {[x y] [96 96 96]})
+                (compute-light coord-map vision {[x y] [96 96 96]})
                 ;; using static precomputed light map
                 light)
         ;;fov map with distance
-        fov (fovmax grid [x y])]
+        fov (fovmax coord-map [x y])]
 
     ;;sight-map to player = fov dists whose coords are in the grid
-    (swap! flow-fields assoc :player (select-keys fov (keys grid)))
+    (swap! flow-fields assoc :player (select-keys fov grid))
     ;;actual fov = squares with light and line of sight
     (select-keys vismap (keys fov))))
 
@@ -317,10 +322,10 @@
   ;; create a tmp mutable ref for callback fn, then return clj data struct
   ;; [does making a vector inside an atom transient do anything?]
   (let [data-ref (atom (transient {}))
-        {:keys [grid]} @world-state
+        {:keys [coord-map]} @world-state
         ;;recursive shadowcasting; supports 90 and 180 degrees; binary visibility only
         ;; rot-js FOV needs a callback to determine if a cell is transparent
-        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? grid [%1 %2]))]
+        FOV-R (rot/FOV.RecursiveShadowcasting. #(transparent? coord-map [%1 %2]))]
     ;; rot-js FOV returns data using a callback w/ 4 args %1 and %2 = coords, %3 = distance, %4 = visibility
     (.compute90 FOV-R x y vision facing #(swap! data-ref assoc! [%1 %2] %4))
     (persistent! @data-ref)))
@@ -333,21 +338,19 @@
 
 ;; create a starting map
 (defn init-grid! [[w h]]
-  (let [{:keys [grid decor]} (generate-town-grid [w h]) ;;initial map
-        grid-keys (keys grid)
-        can-spots (keys (filter (comp #{:can-spot} val) decor))
+  (let [coord-map (generate-town-grid [w h]) ;;initial map
+        grid-keys (set (keys (filter #(:base (val %)) coord-map))) ;;coords with :base key
+        can-spots (keys (filter (comp #{:can-spot} :decor val) coord-map))
         box-keys (sample 5 grid-keys)  ;;random locations for boxes
-        free-cells (set/difference (set grid-keys) (set box-keys)) ;;squares without boxes
+        free-cells (apply disj grid-keys box-keys) ;;squares without boxes
         starting-entities (:entities @world-state)
         starting-coords (sample (count starting-entities) free-cells) ;;a vector of random starting locations
         light-sources (zipmap
-                       (keys (filter (comp #{:street-light} val) decor))
+                       (keys (filter (comp #{:street-light} :decor val) coord-map))
                        (repeat [320 240 0]))]
     (swap! world-state assoc
-           :grid grid
-           :decor decor
-           ;;add boxes to grid and store in :grid of world-state
-           :obj (assoc-multi {} box-keys :closed-box)
+           :grid grid-keys
+           :coord-map (update-multi coord-map box-keys #(assoc % :items #{:boxc}))
            ;;give each starting entity a location (:coords key) and random facing
            ;;  an entity is a k-v pair where each v is a hashmap
            :entities (into {} (map (fn [[k v] x] [k (assoc v :coords x :facing (rand-int (count dirs)))])
@@ -356,7 +359,7 @@
            :boxes (vec box-keys) :ananas (first box-keys)
            :light-sources light-sources
            ;; compute lighting
-           :light (compute-light grid 4 light-sources))
+           :light (compute-light coord-map 4 light-sources))
     ;; compute entities' fov based on starting info
     (swap! world-state update :entities update-all #(assoc % :fov (compute-fov %)))
     (swap! world-state #(update-vis % (get-in % [:entities :player :fov])))
@@ -365,7 +368,7 @@
     ;; make a flow field for each box
     (swap! flow-fields into
            (reduce
-            #(assoc %1 %2 (utils/breadth-first #{%2} grid utils/neigh4 50))
+            #(assoc %1 %2 (utils/breadth-first #{%2} grid-keys utils/neigh4 50))
             {}
             box-keys))))
 
