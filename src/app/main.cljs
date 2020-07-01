@@ -80,7 +80,7 @@
                :scroll-teleport "Scroll of teleport"
                :closed-box "Closed box"
                :open-box "Open box"
-               :open "Open"
+               :open "Open" :get "Get" :drop "Drop"
                :drink "Drink"
                :read "Read"})
 
@@ -206,12 +206,12 @@
                            m))
         {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
 
-;; called when player interacts with item in inventory
+;; called when player interacts with item
 (defn item-menu! [obj-key title]
   ;;add/update menu in db
   (swap! db update :ui-components assoc :interact-menu
-         ;; passing empty map as default target
-         (interact-comp obj-key title (world/valid-verbs :player obj-key) {}))
+         ;;passing map location as default target
+         (interact-comp obj-key title (world/valid-verbs :player obj-key) (world/player-coord-info)))
   ;; transfer control to menu
   (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
   ;; force re-render to make menu appear
@@ -224,16 +224,14 @@
   (conj (into [{:id :label :pos 0 :type :button :txt "-- Items --"}]
               ;; k is the object key, v is a map containing :type and :qty
               (map-indexed (fn [i [k {t :type q :qty}]]
-                             {:id k :pos (inc i) :type :button :txt (str (key-text t) " x" q)
-                              :effect #(item-menu! k (key-text t))})
+                             {:id k :pos (inc i) :type :button :txt (str (some key-text t) (when (> q 1) (str " x" q)))
+                              :effect #(item-menu! k (some key-text t))})
                            m))
         {:id :cancel :pos (inc (count m)) :type :button :txt "[  Cancel  ]" :effect #(close-menu!)}))
 
-;; ui functions triggered from game screen on player's turn
-(defn inventory-menu! []
+(defn- inv-menu! [inv]
   ;;add/update menu in db
-  (swap! db update :ui-components assoc :inv-menu
-         (inv-comp (world/inventory :player)))
+  (swap! db update :ui-components assoc :inv-menu (inv-comp inv))
   ;; transfer control to menu
   (swap! db assoc :keychan dialog-chan :focused [:inv-menu 0] :background [:game-screen])
   ;; force re-render to make menu appear
@@ -241,21 +239,14 @@
   ;; opening the menu isn't really an action, so return nil
   nil)
 
+;; ui functions triggered from game screen on player's turn
+(defn inventory-menu! [] (inv-menu! (world/inventory :player)))
+
 ;; called when player interacts with map location
 (defn interaction-menu! []
-  (let [targ-info (world/player-coord-info)]
-    ;;look for object at current map location
-    (when-let [obj-key (last (keys (:items targ-info)))]
-      ;;add/update menu in db
-      (swap! db update :ui-components assoc :interact-menu
-             ;;passing map location as default target
-             (interact-comp obj-key (key-text (get-in (:items targ-info) [obj-key :type])) (world/valid-verbs :player obj-key) targ-info))
-      ;; transfer control to menu
-      (swap! db assoc :keychan dialog-chan :focused [:interact-menu 0] :background [:game-screen])
-      ;; force re-render to make menu appear
-      (render-ui @db)
-      ;; opening the menu isn't really an action, so return nil
-      nil)))
+  ;;look for objects at current map location
+  (let [inv (:items (world/player-coord-info))]
+    (when (seq inv) (inv-menu! inv))))
 
 (defn menu! []
   ;; transfer control to menu

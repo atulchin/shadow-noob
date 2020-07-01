@@ -33,9 +33,9 @@
                                     :fov-fn :fov-90 :vision 5
                                     :move-time 10 :diag 2.0
                                     :action #(chase! :pedro :player 10 4)}}
-                 :keymap {:a {:type :potion-speed :inv [:entities :player :items] :qty 1}
-                          :b {:type :scroll-teleport :inv [:entities :player :items] :qty 2}
-                          :boxc {:type :closed-box} :boxo {:type :open-box}}
+                 :keymap {:a {:type [:potion-speed :potion :item] :inv [:entities :player :items] :qty 1}
+                          :b {:type [:scroll-teleport :scroll :item] :inv [:entities :player :items] :qty 2}
+                          :boxc {:type [:closed-box]} :boxo {:type [:open-box]}}
                  :time 0
                  :status {}
                  :effects #{}})
@@ -110,6 +110,14 @@
         inv (get-in s [:entities ent-key :items])]
     (items keymap inv)))
 
+(defn transfer-item [state obj-key dest-vec]
+  (let [src (get-in state [:keymap obj-key :inv])]
+    (-> state
+        (update-in src disj obj-key)
+        (update-in dest-vec #(set (conj % obj-key)))
+        (assoc-in [:keymap obj-key :inv] dest-vec)
+        )))
+
 (defn consume-item [s obj-key]
   (if (> (get-in s [:keymap obj-key :qty]) 1)
     (update-in s [:keymap obj-key :qty] dec)
@@ -169,6 +177,10 @@
     (function state entity-key target)))
 
 ;; verb functions must return a fn that takes state as its only argument
+;;  they receive a map containing
+;;   :entity-key  :obj-key  :target 
+;;     :verb  :obj-type  :inv 
+;;  plus any keys specified in ^meta
 (def item-defs
   {:potion-speed
    ^{:effect :speed :duration 100}
@@ -182,36 +194,48 @@
    ^{:function open-box}
    {:verbs #{:open} :open entity-target-fn}
 
-   :potion ^:consumed {:verbs #{:drink} :drink item-used-fn}
+   :potion ^:consumed {:parent :item :verbs #{:drink} :drink item-used-fn}
 
-   :scroll ^:consumed {:verbs #{:read} :read item-used-fn}
+   :scroll ^:consumed {:parent :item :verbs #{:read} :read item-used-fn}
+   
+   :item {:verbs #{:get :drop}
+          :get (fn [m] #(-> %
+                            (transfer-item (:obj-key m) [:entities (:entity-key m) :items])
+                            (assoc :status {(:verb m) (:obj-type m) :dt 10})))
+          :drop (fn [m] #(-> %
+                             (transfer-item (:obj-key m) [:coord-map (:coords (:target m)) :items])
+                             (assoc :status {(:verb m) (:obj-type m) :dt 1})))
+          }
    })
 
 (def target-req {[:scroll-teleport :read] true})
 
 (defn valid-verbs [ent-key obj-key]
-  (let [t (get-in (:keymap @world-state) [obj-key :type])]
-    (loop [v #{}
-           i (item-defs t)]
-      (if-let [p (:parent i)]
-        (recur (into v (:verbs i)) (item-defs p))
-        (into v (:verbs i))))))
+  (let [{tvec :type inv :inv} (get (:keymap @world-state) obj-key)
+        verbs (reduce #(into %1 (get-in item-defs [%2 :verbs])) #{} tvec)]
+    ;;disable get/drop depending on whether item is in inventory
+    (if (= inv [:entities ent-key :items])
+      (disj verbs :get)
+      (disj verbs :drop))
+    ))
 
 (defn target-required? [obj-key verb-key]
-  (let [t (get-in (:keymap @world-state) [obj-key :type])]
-    (target-req [t verb-key])))
+  (let [tvec (get-in (:keymap @world-state) [obj-key :type])]
+    (some #(target-req [% verb-key]) tvec)
+    ))
 
 (defn- interaction-fns [ent-key obj-key verb targ]
-  (let [t (get-in (:keymap @world-state) [obj-key :type])]
-    (loop [fcoll []
-           i (item-defs t)]
-      (let [m (into
-               {:entity-key ent-key :obj-key obj-key :target targ :verb verb :obj-type t}
-               (meta i))
-            f ((get i verb) m)]
-        (if-let [p (:parent i)]
-          (recur (conj fcoll f) (item-defs p))
-          (conj fcoll f))))))
+  (let [{tvec :type inv :inv} (get (:keymap @world-state) obj-key)]
+    (reduce
+     (fn [fcoll t] (let [i (item-defs t)
+                         vf (get i verb)
+                         m (into
+                            {:entity-key ent-key :obj-key obj-key :target targ
+                             :verb verb :obj-type t :inv inv}
+                            (meta i))]
+                     (if vf (conj fcoll (vf m)) fcoll)
+                     ))
+     [] tvec)))
 
 (defn interact! [ent-key obj-key verb targ]
   (let [f (apply comp (interaction-fns ent-key obj-key verb targ))

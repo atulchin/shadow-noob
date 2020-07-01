@@ -39,6 +39,8 @@
                          "a" [0 [32 10]]
                          "P" [0 [28 4]]
                          ;"x" [0 [0 2]]
+                         "!" [1 [56 11]]
+                         "]" [1 [44 15]]
                          }
                  :icons {:player "@"
                          :floor "."
@@ -57,6 +59,8 @@
                          :ananas "a"
                          :pedro "P"
                          ;:can-spot "x"
+                         :potion "!"
+                         :scroll "]"
                          }})
 
 (defn reset-defaults []
@@ -191,21 +195,16 @@
   (draw-rect ctx [0 0] dims (conj bg-col 0.6)))
 
 ;;draws a named object to xy coords contained in k
-(defn- draw-coords [{:keys [ctx tiles tilemap icons grid-start]} clear? [k v]]
-  (when-let [[set-idx tile-coords] (get tilemap (get icons v))]
+(defn- draw-coords 
+  [{:keys [ctx tiles tilemap icons grid-start]} clear? coords key-vec]
+  (when-let [[set-idx tile-coords] (get tilemap (some icons key-vec))]
     (let [{:keys [offsets grabdims img]} (get tiles set-idx)
-          xy (screen-coords k grid-start)
+          xy (screen-coords coords grid-start)
           sxy (mapv * offsets tile-coords)]
-      (when clear? (clear-tile ctx xy TILE-DIMS))
+      ;;just clear the whole canvas before drawing
+      ;(when clear? (clear-tile ctx xy TILE-DIMS))
       (draw-tile ctx img sxy grabdims xy TILE-DIMS)
       )))
-
-;;draws a map of key-value pairs where each key is [x y] coords
-;;  each value is a keyword
-;;  doseq iterates through k-v pairs
-#_(defn- draw-mkvs [d-context clear? mkvs]
-  (doseq [m mkvs]
-    (draw-coords d-context clear? m)))
 
 ;; takes entity val
 (defn- draw-entity [d-context {:keys [id coords fov]}]
@@ -224,13 +223,11 @@
 ;; vals are maps containing keywords to draw
 (defn- draw-map [d-context keymap m]
   (doseq [[coords {:keys [base decor items]}] m]
-    (let [item-keys (map #(get-in keymap [% :type]) items)]
-      (draw-coords d-context true [coords base])
-      (draw-coords d-context false [coords decor])
-      (draw-coords d-context false [coords (last item-keys)])
-      )
-    )
-  )
+    (draw-coords d-context true coords [base])
+    (draw-coords d-context false coords [decor])
+    (draw-coords d-context false coords 
+                 (get-in keymap [(last items) :type]))
+    ))
 
 ;; draws grid and entities
 ;;   in the "visible" area of the world grid only
@@ -249,21 +246,14 @@
         keymap (:keymap world-state)]
 
     ;;draw previously seen areas first
+    (clear-canvas d-context)
     #_(time) (draw-map d-context keymap (select-keys (:coord-map world-state) seen-set))
-    ;(draw-mkvs d-context true (select-keys (:grid world-state) seen-set))
-    ;(draw-mkvs d-context false (select-keys (:decor world-state) seen-set))
-    ;(draw-mkvs d-context false (select-keys (:obj world-state) seen-set))
-    ;;shade the entire screen, will be cleared in visible areas
+    ;;shade the entire screen, then clear vis areas
     #_(time) (draw-dark d-context)
 
-    ;;then draw over those with currently visible area
+    ;;drawing tiles clears shading; draw-light does not
     #_(time) (draw-map d-context keymap (select-keys (:coord-map world-state) viskeys))
-    ;(draw-mkvs d-context true (select-keys (:grid world-state) viskeys))
-    ;(draw-mkvs d-context false (select-keys (:decor world-state) viskeys))
-    ;(draw-mkvs d-context false (select-keys (:obj world-state) viskeys))
     #_(time) (draw-light d-context (:visible world-state))
-    ;(draw-shadow d-context (:visible world-state))
-    ;(draw-light d-context (select-keys (:light world-state) viskeys))
     
     ;;draw entities whose coords are in the visible area
     (doseq [e visible-entities]
